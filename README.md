@@ -47,3 +47,9 @@ docker compose up -d --build
 ```
 
 需要設定的環境變數在 `.env.example` 裡有說明。
+
+<img width="859" height="922" alt="image" src="https://github.com/user-attachments/assets/f636007e-312c-4c1f-98ba-142ffd227659" />
+<img width="3784" height="1453" alt="image" src="https://github.com/user-attachments/assets/84b98b80-e99e-4d76-afa7-9e08fc4ebb69" />
+<img width="3724" height="1694" alt="image" src="https://github.com/user-attachments/assets/67f3bd84-fb59-4988-aa24-7e62396282f9" />
+
+
