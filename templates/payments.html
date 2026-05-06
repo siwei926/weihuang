@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}繳費管理{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="fw-bold mb-0"><i class="bi bi-cash-coin me-2"></i>繳費管理</h4>
+  <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">
+    <i class="bi bi-plus-lg me-1"></i>新增繳費
+  </button>
+</div>
+
+<!-- 月份篩選 -->
+<form method="get" class="d-flex align-items-center gap-2 mb-3">
+  <label class="fw-semibold me-1">收款月份：</label>
+  <input type="month" name="month" class="form-control" style="width:160px"
+         value="{{ month_filter }}"
+         onchange="this.form.submit()">
+  <a href="{{ url_for('payments') }}" class="btn btn-outline-secondary btn-sm">本月</a>
+</form>
+
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    <table class="table table-hover table-bordered mb-0">
+      <thead>
+        <tr>
+          <th style="width:80px">訂單</th>
+          <th>車位</th>
+          <th>車主</th>
+          <th>車牌</th>
+          <th>繳費期間</th>
+          <th>繳費日期</th>
+          <th>金額</th>
+          <th>備註</th>
+          <th style="width:80px">刪除</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in payment_rows %}
+        {% if row.group %}
+          {# 合併多筆 — 摘要列 + 可展開細項 #}
+          {% set r = row.rental %}
+          <tr style="cursor:default;">
+            <td><span class="badge bg-info text-dark">#{{ r.id }}</span></td>
+            <td class="fw-bold">{{ r.spot.spot_number }}</td>
+            <td>{{ r.tenant.name }}{% if r.tenant.is_deleted %} <span class="badge bg-secondary">已刪除</span>{% endif %}</td>
+            <td>
+              {% if r.tenant.license_plate %}
+                <span class="badge bg-dark">{{ r.tenant.license_plate }}</span>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {{ row.period_str }}
+              <button class="btn btn-sm btn-outline-info ms-1 py-0 px-2"
+                      onclick="toggleGroup({{ row.group_id }})" title="展開 / 收合細項"
+                      id="btn-grp-{{ row.group_id }}">
+                <i class="bi bi-plus-lg" id="icon-grp-{{ row.group_id }}"></i>
+                {{ row.count }} 個月
+              </button>
+            </td>
+            <td>{{ row.payment_date.strftime('%Y-%m-%d') }}</td>
+            <td class="text-end fw-semibold">{{ row.amount }} 元</td>
+            <td>{{ row.notes }}</td>
+            <td>
+              <form action="{{ url_for('payment_group_delete') }}" method="post"
+                    onsubmit="return confirm('確定刪除此 {{ row.count }} 筆繳費記錄？')">
+                <input type="hidden" name="ids" value="{{ row.ids }}">
+                <button class="btn btn-sm btn-outline-danger" title="刪除全部 {{ row.count }} 筆"><i class="bi bi-trash"></i></button>
+              </form>
+            </td>
+          </tr>
+          {# 細項列（預設隱藏） #}
+          {% for p in row.details %}
+          <tr class="d-none grp-detail-{{ row.group_id }}" style="background:#f8f9fa;font-size:.88rem;">
+            <td><small class="text-muted">#{{ p.rental_id }}</small></td>
+            <td></td>
+            <td class="text-muted ps-2" colspan="2">
+              <i class="bi bi-arrow-return-right me-1 text-muted"></i>
+              {{ loop.index }}/{{ row.count }}
+            </td>
+            <td class="text-muted" style="border-left:3px solid #adb5bd;">
+              {{ p.period_month | period_range(p.rental.start_date, p.rental.expected_end_date) }}
+            </td>
+            <td class="text-muted">{{ p.payment_date.strftime('%Y-%m-%d') }}</td>
+            <td class="text-end">{{ p.amount | int }} 元</td>
+            <td>{{ p.notes or '—' }}</td>
+            <td>
+              <form action="{{ url_for('payment_delete', payment_id=p.id) }}" method="post"
+                    onsubmit="return confirm('確定刪除第 {{ loop.index }} 筆（{{ p.period_month }}）？')">
+                <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          {# 單筆 #}
+          {% set p = row.p %}
+          <tr>
+            <td><span class="badge bg-info text-dark">#{{ p.rental_id }}</span></td>
+            <td class="fw-bold">{{ p.rental.spot.spot_number }}</td>
+            <td>{{ p.rental.tenant.name }}{% if p.rental.tenant.is_deleted %} <span class="badge bg-secondary">已刪除</span>{% endif %}</td>
+            <td>
+              {% if p.rental.tenant.license_plate %}
+                <span class="badge bg-dark">{{ p.rental.tenant.license_plate }}</span>
+              {% else %}—{% endif %}
+            </td>
+            <td>{{ p.period_month | period_range(p.rental.start_date, p.rental.expected_end_date) }}</td>
+            <td>{{ p.payment_date.strftime('%Y-%m-%d') }}</td>
+            <td class="text-end fw-semibold">{{ p.amount | int }} 元</td>
+            <td>{{ p.notes or '—' }}</td>
+            <td>
+              <form action="{{ url_for('payment_delete', payment_id=p.id) }}" method="post"
+                    onsubmit="return confirm('確定刪除此繳費記錄？')">
+                <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+              </form>
+            </td>
+          </tr>
+        {% endif %}
+        {% else %}
+        <tr><td colspan="9" class="text-center text-muted py-3">{{ month_filter }} 無收款記錄</td></tr>
+        {% endfor %}
+      </tbody>
+      {% if payment_rows %}
+      <tfoot>
+        <tr class="table-secondary fw-semibold">
+          <td colspan="6" class="text-end">合計</td>
+          <td class="text-end">{{ total_amount }} 元</td>
+          <td colspan="2"></td>
+        </tr>
+      </tfoot>
+      {% endif %}
+    </table>
+  </div>
+</div>
+
+<!-- 新增繳費 Modal -->
+<div class="modal fade" id="addModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form action="{{ url_for('payment_add') }}" method="post">
+        <div class="modal-header">
+          <h5 class="modal-title">新增繳費記錄</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label fw-semibold">出租記錄（車位／車主） <span class="text-danger">*</span></label>
+            <select name="rental_id" class="form-select" required>
+              <option value="">— 選擇 —</option>
+              {% for r in active_rentals %}
+                <option value="{{ r.id }}">
+                  車位 {{ r.spot.spot_number }} — {{ r.tenant.name }}（{{ r.tenant.license_plate or '無車牌' }}）
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">繳費期間（月份）</label>
+            <input type="month" name="period_month" class="form-control" value="{{ month_filter }}">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">繳費日期</label>
+            <input type="date" name="payment_date" class="form-control"
+                   value="{{ today.strftime('%Y-%m-%d') }}">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">金額（元）</label>
+            <input type="number" name="amount" class="form-control" value="0" min="0">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">備註</label>
+            <input type="text" name="notes" class="form-control">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-primary">新增</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function toggleGroup(gid) {
+  const rows = document.querySelectorAll(`.grp-detail-${gid}`);
+  const icon = document.getElementById(`icon-grp-${gid}`);
+  const isHidden = rows.length > 0 && rows[0].classList.contains('d-none');
+  rows.forEach(r => r.classList.toggle('d-none', !isHidden));
+  icon.className = isHidden ? 'bi bi-dash-lg' : 'bi bi-plus-lg';
+}
+</script>
+{% endblock %}

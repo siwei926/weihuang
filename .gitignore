@@ -1,0 +1,17 @@
+# 租客資料、合約照片、備份（含個人資料，絕不上傳）
+data/
+
+# Python 暫存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 環境變數（含機密 Token）
+.env
+
+# 編輯器
+.vscode/
+.idea/
+*.swp

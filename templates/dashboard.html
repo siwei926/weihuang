@@ -1,0 +1,4092 @@
+{% extends "base.html" %}
+{% block title %}儀表板 — 停車場管理{% endblock %}
+
+{% block content %}
+<style>
+.stat-filter { cursor: pointer; transition: transform .15s, box-shadow .15s; user-select:none; }
+.stat-filter:hover { transform: translateY(-3px); box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.stat-filter.filter-active { outline: 3px solid rgba(255,255,255,.85); outline-offset: 2px; transform: translateY(-3px); box-shadow: 0 6px 20px rgba(0,0,0,.35); }
+.spot-grid.reorder-mode .spot-card { cursor: grab; transition: transform .15s, box-shadow .15s; }
+.spot-grid.reorder-mode .spot-card:active { cursor: grabbing; }
+.spot-grid.reorder-mode .spot-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(13,110,253,.25); }
+.spot-card.dragging {
+  opacity: .4 !important;
+  transform: scale(1.05) rotate(-1deg) !important;
+  outline: 3px dashed #0d6efd !important;
+  outline-offset: 3px !important;
+  box-shadow: 0 8px 24px rgba(13,110,253,.4) !important;
+  z-index: 10;
+  pointer-events: none;
+}
+.reorder-hint { font-size: .8rem; color: #0d6efd; margin-left: .5rem; }
+</style>
+<h4 class="mb-3 fw-bold"><i class="bi bi-grid-3x3-gap me-2"></i>停車場儀表板
+  <small class="text-muted fs-6 fw-normal ms-2">{{ today.strftime('%Y年%m月%d日') }}</small>
+</h4>
+
+<!-- 統計卡 -->
+<div class="row g-3 mb-2">
+  <div class="col-6 col-md">
+    <div class="stat-card stat-total stat-filter" data-filter="all" onclick="filterSpots(this)" title="顯示全部">
+      <div class="stat-num">{{ total }}</div>
+      <div class="stat-label">總車位數</div>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="stat-card stat-rented stat-filter" data-filter="rented" onclick="filterSpots(this)" title="篩選出租中">
+      <div class="stat-num">{{ counts.paid + counts.unpaid + counts.warning }}</div>
+      <div class="stat-label">出租中</div>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="stat-card stat-vacant stat-filter" data-filter="vacant" onclick="filterSpots(this)" title="篩選空置">
+      <div class="stat-num">{{ counts.vacant }}</div>
+      <div class="stat-label">空置</div>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="stat-card stat-paid stat-filter" data-filter="paid" onclick="filterSpots(this)" title="篩選本月已繳費">
+      <div class="stat-num">{{ counts.paid + counts.warning }}</div>
+      <div class="stat-label">本月已繳費</div>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="stat-card stat-unpaid stat-filter" data-filter="unpaid" onclick="filterSpots(this)" title="篩選本月未繳費">
+      <div class="stat-num">{{ counts.unpaid }}</div>
+      <div class="stat-label">本月未繳費</div>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="stat-card stat-warning stat-filter" data-filter="expiring" onclick="filterSpots(this)" title="篩選即將到期">
+      <div class="stat-num">{{ counts.warning }}</div>
+      <div class="stat-label">即將到期</div>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="stat-card stat-prepaid stat-filter" data-filter="prepaid" onclick="filterSpots(this)" title="篩選預繳車位">
+      <div class="stat-num">{{ counts.prepaid }}</div>
+      <div class="stat-label">已預繳</div>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="stat-card stat-disabled stat-filter" data-filter="disabled" onclick="filterSpots(this)" title="篩選停用">
+      <div class="stat-num">{{ counts.disabled }}</div>
+      <div class="stat-label">停用</div>
+    </div>
+  </div>
+</div>
+
+<!-- 篩選提示列 -->
+<div id="filterBar" class="d-none mb-3">
+  <span class="badge rounded-pill bg-dark fs-6 py-2 px-3">
+    <i class="bi bi-funnel-fill me-1"></i>篩選中：<span id="filterLabel"></span>
+    <button type="button" class="btn-close btn-close-white ms-2" style="font-size:.65rem;vertical-align:middle;"
+            onclick="filterSpots(document.querySelector('.stat-card.stat-total'))"></button>
+  </span>
+</div>
+
+<!-- 圖例 -->
+<div class="mb-3">
+  <span class="legend-item"><span class="legend-dot" style="background:#43a047;"></span>空置</span>
+  <span class="legend-item"><span class="legend-dot" style="background:#00bcd4;"></span>已繳費</span>
+  <span class="legend-item"><span class="legend-dot" style="background:#ef5350;"></span>未繳費</span>
+  <span class="legend-item"><span class="legend-dot" style="background:#ffc107;"></span>租約即將到期（30天內）或下月繳費快到</span>
+  <span class="legend-item"><span class="legend-dot" style="background:#e9ecef; border: 2px solid #adb5bd;"></span>停用</span>
+  <span class="legend-item"><span style="font-size:.85rem;">📅</span> 空置但已有預約</span>
+  <small class="text-muted ms-2">（點擊車位可快速操作）</small>
+</div>
+
+<!-- 車位格狀圖：固定 9 欄 × 2 列 -->
+<div class="spot-grid mb-4" id="spotGrid">
+  {% for item in spot_data %}
+    {% set s = item.spot %}
+    {% set status = item.status %}
+    {% set r = item.rental %}
+    {% set t = item.tenant %}
+    <div class="spot-card spot-{{ status }}{% if item.prepaid_expiring %} prepaid-expiring{% endif %}{% if item.rental_refund_pending < 0 or item.future_pending_charge %} pending-charge{% elif item.rental_refund_pending > 0 or item.pending_refund_amount > 0 or item.future_pending_refund %} pending-refund{% endif %}"
+         data-spot-id="{{ s.id }}"
+         draggable="false"
+         ondragstart="onSpotDragStart(event)"
+         ondragend="onSpotDragEnd(event)"
+         ondragover="onSpotDragOver(event)"
+         ondragenter="onSpotDragEnter(event)"
+         ondragleave="onSpotDragLeave(event)"
+         ondrop="onSpotDrop(event)"
+         data-spot-number="{{ s.spot_number }}"
+         data-spot-type="{{ s.spot_type }}"
+         data-disabled-reason="{{ item.disabled_reason }}"
+         data-status="{{ status }}"
+         data-rental-id="{{ r.id if r else '' }}"
+         data-tenant-id="{{ t.id if t else '' }}"
+         data-tenant-name="{{ t.name if t else '' }}"
+         data-tenant-phone="{{ t.phone if t else '' }}"
+         data-tenant-plate="{{ t.license_plate if t else '' }}"
+         data-start-date="{{ r.start_date.strftime('%Y-%m-%d') if r else '' }}"
+         data-monthly-fee="{{ r.monthly_fee | int if r else 0 }}"
+         data-expected-end="{{ item.expected_end }}"
+         data-current-month="{{ item.bill_month }}"
+         data-payment-id="{{ item.payment_id }}"
+         data-payment-amount="{{ item.payment_amount }}"
+         data-prepaid-months="{{ item.prepaid_months }}"
+         data-prepaid-until="{{ item.prepaid_until }}"
+         data-prepaid-expiring="{{ 'true' if item.prepaid_expiring else '' }}"
+         data-next-tenant-id="{{ item.next_tenant_id }}"
+         data-next-tenant-name="{{ item.next_tenant_name }}"
+         data-next-tenant-phone="{{ item.next_tenant_phone }}"
+         data-next-tenant-plate="{{ item.next_tenant_plate }}"
+         data-next-start-date="{{ item.next_start_date }}"
+         data-next-expected-end="{{ item.next_expected_end }}"
+         data-next-prepaid-months="{{ item.next_prepaid_months }}"
+         data-pending-refund-id="{{ item.pending_refund_id }}"
+         data-pending-refund-amount="{{ item.pending_refund_amount }}"
+         data-confirmed-refund-amount="{{ item.confirmed_refund_amount }}"
+         data-confirmed-charge-waiver-amount="{{ item.confirmed_charge_waiver_amount }}"
+         data-original-expected-end="{{ item.original_expected_end }}"
+         data-future-rental-id="{{ item.future_rental_id }}"
+         data-future-rental-start="{{ item.future_rental_start }}"
+         data-future-rental-expected-end="{{ item.future_rental_expected_end }}"
+         data-future-tenant-id="{{ item.future_tenant_id }}"
+         data-future-tenant-name="{{ item.future_tenant_name }}"
+         data-future-tenant-phone="{{ item.future_tenant_phone }}"
+         data-future-tenant-plate="{{ item.future_tenant_plate }}"
+         data-future-rental-paid-months="{{ item.future_rental_paid_months }}"
+         data-future-rental-total-paid="{{ item.future_rental_total_paid }}"
+         data-future-rental-charge-waiver-amount="{{ item.future_rental_charge_waiver_amount }}"
+         data-future-rental-confirmed-refund-amount="{{ item.future_rental_confirmed_refund_amount }}"
+         data-future-rental-prepaid-until="{{ item.future_rental_prepaid_until }}"
+         data-future-rental-refund-pending="{{ item.future_rental_refund_pending }}"
+         data-rental-refund-pending="{{ item.rental_refund_pending }}"
+         data-extra-futures='{{ item.extra_futures_json }}'
+         data-last-prepaid-amount="{{ item.last_prepaid_amount }}"
+         data-rental-start-date="{{ item.rental_start_date }}"
+         data-total-paid-all="{{ item.total_paid_all }}"
+         data-has-refund-waiver="{{ 'true' if item.has_refund_waiver else '' }}"
+         data-contract-count="{{ item.contract_count }}"
+         data-future-contract-count="{{ item.future_contract_count }}"
+         ontouchstart="_spotLpStart(event,this)" ontouchend="_spotLpEnd()" ontouchmove="_spotLpMove()"
+         onclick="_spotClick(this)">
+      <div class="spot-num">{{ s.spot_number }}</div>
+      {% if t %}
+        <div class="spot-info">{{ t.name }}</div>
+        <div class="spot-info">{{ t.license_plate or '—' }}</div>
+      {% elif item.future_rental_start %}
+        <div class="spot-info" style="opacity:.75;font-style:italic;">{{ item.future_tenant_name }}</div>
+        <div class="spot-info" style="font-size:.68rem;opacity:.65;">預約 {{ item.future_rental_start }}</div>
+      {% elif s.spot_type == 'disabled' %}
+        <div class="spot-info">{{ item.disabled_reason or '停用' }}</div>
+      {% else %}
+        <div class="spot-info">空置</div>
+      {% endif %}
+      {% if status == 'unpaid' %}
+        <span class="position-absolute top-0 end-0 mt-1 me-1" style="font-size:.8rem;">⚠️</span>
+      {% elif status == 'warning' %}
+        <span class="position-absolute top-0 end-0 mt-1 me-1" style="font-size:.8rem;">🔔</span>
+      {% elif item.future_rental_start %}
+        <span class="position-absolute top-0 end-0 mt-1 me-1" style="font-size:.8rem;">📅</span>
+      {% endif %}
+      {# 目前車主提示（左下角小 badge） #}
+      {% if item.rental_refund_pending < 0 %}
+        <span class="spot-flag spot-flag-left" style="background:#e65100;" title="目前車主待補繳">目補</span>
+      {% elif item.rental_refund_pending > 0 or item.pending_refund_amount > 0 %}
+        <span class="spot-flag spot-flag-left" style="background:#6a1b9a;" title="目前車主待退款">目退</span>
+      {% endif %}
+      {# 下任車主提示（右下角小 badge）— 涵蓋預約換租尚未收款與獨立未來租約 #}
+      {% if item.future_pending_charge %}
+        <span class="spot-flag spot-flag-right" style="background:#e65100;" title="下任車主待補繳">下補</span>
+      {% elif item.future_pending_refund %}
+        <span class="spot-flag spot-flag-right" style="background:#6a1b9a;" title="下任車主待退款">下退</span>
+      {% endif %}
+    </div>
+    {# 第 8 格之後插入隱形佔位 → 強制換行：上 8 下 9 排列 #}
+    {% if loop.index == 8 %}<div class="spot-placeholder"></div>{% endif %}
+  {% endfor %}
+</div>
+
+<!-- 本月收支摘要（會計分項：收入 → 退費 → 淨收入 → 支出 → 淨額） -->
+{% set net_revenue = month_revenue - month_refund %}
+{% set net_total = net_revenue - month_expense %}
+<div class="row g-2 mb-3">
+  <div class="col-6 col-md">
+    <div class="stat-card stat-compact" style="background:linear-gradient(135deg,#26a69a,#00695c);">
+      <div class="stat-num">{{ '{:,}'.format(month_revenue) }}</div>
+      <div class="stat-label">本月收入（毛）</div>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="stat-card stat-compact" style="background:linear-gradient(135deg,#ff9800,#e65100);">
+      <div class="stat-num">{{ '{:,}'.format(month_refund) }}</div>
+      <div class="stat-label">退費（收入扣除）</div>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="stat-card stat-compact" style="background:linear-gradient(135deg,#5e35b1,#311b92);">
+      <div class="stat-num">{{ '{:,}'.format(net_revenue) }}</div>
+      <div class="stat-label">本月淨收入</div>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="stat-card stat-compact" style="background:linear-gradient(135deg,#ef5350,#b71c1c);">
+      <div class="stat-num">{{ '{:,}'.format(month_expense) }}</div>
+      <div class="stat-label">本月支出</div>
+    </div>
+  </div>
+  <div class="col-12 col-md">
+    <div class="stat-card stat-compact" style="background:{% if net_total >= 0 %}linear-gradient(135deg,#42a5f5,#1565c0){% else %}linear-gradient(135deg,#ff7043,#bf360c){% endif %};">
+      <div class="stat-num">{{ '{:,}'.format(net_total) }}</div>
+      <div class="stat-label">本月淨額</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── 車位操作 Modal ── -->
+<div class="modal fade" id="spotModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered" id="spotModalDialog">
+    <div class="modal-content">
+      <div class="modal-header" id="spotModalHeader">
+        <h5 class="modal-title d-flex align-items-center gap-2" id="spotModalTitle">
+          <span id="spotTitleText">車位操作</span>
+          <span id="btnSetDisabled" class="d-none badge bg-danger"
+                style="font-size:.72rem;font-weight:600;cursor:pointer;padding:4px 9px;border-radius:20px;letter-spacing:.02em;"
+                onclick="doSetType('disabled')" title="停用此車位">
+            <i class="bi bi-slash-circle me-1"></i>停用
+          </span>
+        </h5>
+        <button type="button" class="btn-close ms-auto" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="spotModalBody">
+       <div class="d-flex flex-column flex-md-row gap-3" id="spotBodyLayout">
+        <div id="spotMainCol" style="flex:1 1 0;min-width:0;">
+
+        <!-- 停用 -->
+        <div id="panelDisabled" class="d-none">
+          <p class="fw-semibold text-secondary">
+            <i class="bi bi-slash-circle me-1"></i>此車位已停用
+          </p>
+          <div id="disabledReasonRow" class="d-none alert alert-secondary py-2 px-3 mb-3 small">
+            <i class="bi bi-info-circle me-1"></i>停用原因：<strong id="disabledReasonText"></strong>
+          </div>
+          <p class="text-muted small">若要重新啟用，請選擇類型後點擊下方按鈕。</p>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-success w-100" onclick="doSetType('rental')">
+              <i class="bi bi-arrow-repeat me-1"></i>改為出租
+            </button>
+          </div>
+        </div>
+
+        <!-- 空置：開始出租 -->
+        <div id="panelVacant" class="d-none">
+          <!-- 目前車主：空 -->
+          <p class="fw-semibold small text-secondary mb-1">
+            <i class="bi bi-person-fill me-1"></i>目前車主
+          </p>
+          <p class="text-success fw-semibold mb-2">
+            <i class="bi bi-check-circle me-1"></i>此車位目前空置
+          </p>
+
+          <hr class="my-2">
+
+          <p class="fw-semibold small text-secondary mb-2">
+            <i class="bi bi-plus-circle me-1"></i>出租此車位
+          </p>
+
+          <!-- 未來預約提示（含目前選項摘要） -->
+          <div id="futureRentalAlert" class="d-none alert alert-warning py-2 px-3 mb-3 small">
+            <div>
+              <i class="bi bi-calendar-event-fill me-1"></i>
+              <strong>已有預約</strong>：此車位自
+              <strong id="futureRentalStartLabel"></strong>
+              起已預約出租；結束日上限為上一個月月底（<strong id="futureRentalCapLabel"></strong>）。
+            </div>
+            <div id="futureRentalCappedDetail" class="d-none mt-1 pt-1 border-top">
+              <i class="bi bi-info-circle-fill me-1"></i>
+              依此上限調整為 <strong id="futureRentalEndLabel"></strong>，實際租期
+              <strong id="futureRentalMonthsLabel"></strong> 個月，共
+              <strong id="futureRentalTotalLabel"></strong> 元。
+            </div>
+          </div>
+
+          <!-- 車主來源切換 -->
+          <div class="btn-group w-100 mb-3" role="group">
+            <button type="button" id="tabSelectTenant"
+                    class="btn btn-outline-primary btn-sm active"
+                    onclick="switchTenantTab('select')">
+              <i class="bi bi-person-check me-1"></i>選擇現有車主
+            </button>
+            <button type="button" id="tabNewTenant"
+                    class="btn btn-outline-primary btn-sm"
+                    onclick="switchTenantTab('new')">
+              <i class="bi bi-person-plus me-1"></i>新增車主
+            </button>
+          </div>
+
+          <!-- 選擇現有車主 -->
+          <div id="sectionSelectTenant" class="mb-3">
+            <label class="form-label fw-semibold">車主 <span class="text-danger">*</span></label>
+            <select id="rentTenantId" class="form-select">
+              <option value="">— 選擇 —</option>
+              {% for t in tenants %}
+              <option value="{{ t.id }}">{{ t.name }}（{{ t.license_plate or '無車牌' }}）</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <!-- 新增車主表單 -->
+          <div id="sectionNewTenant" class="d-none mb-3">
+            <div class="mb-2">
+              <label class="form-label fw-semibold">姓名 <span class="text-danger">*</span></label>
+              <input type="text" id="newTenantName" class="form-control" placeholder="必填">
+            </div>
+            <div class="mb-2">
+              <label class="form-label fw-semibold">電話/Line ID <span class="text-danger">*</span></label>
+              <input type="text" id="newTenantPhone" class="form-control"
+                     placeholder="電話或 Line ID（擇一填入，必填，作為唯一身份識別）">
+            </div>
+            <div class="mb-2">
+              <label class="form-label fw-semibold">車牌號碼</label>
+              <input type="text" id="newTenantPlate" class="form-control" placeholder="例：ABC-1234">
+            </div>
+          </div>
+
+          <!-- 共用欄位 -->
+          <div class="row g-2 mb-2">
+            <div class="col-6">
+              <label class="form-label fw-semibold">起租日</label>
+              <input type="date" id="rentStartDate" class="form-control" onchange="updateExpectedEnd()">
+            </div>
+            <div class="col-6">
+              <label class="form-label fw-semibold">租幾個月</label>
+              <select id="rentDurationMonths" class="form-select" onchange="updateExpectedEnd()">
+                <option value="1">1 個月</option>
+                <option value="2">2 個月</option>
+                <option value="3">3 個月</option>
+                <option value="6">6 個月（半年）</option>
+                <option value="12" selected>12 個月（1 年）</option>
+                <option value="24">24 個月（2 年）</option>
+              </select>
+            </div>
+          </div>
+          <!-- 截斷提示已合併至上方 futureRentalAlert -->
+          <div id="rentCapHint" class="d-none"></div>
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label class="form-label fw-semibold">
+                預計結束日 <span class="text-muted fw-normal small">（可手動調整）</span>
+              </label>
+              <input type="date" id="rentExpectedEnd" class="form-control" onchange="updatePrepaidOptions()">
+            </div>
+            <div class="col-6">
+              <label class="form-label fw-semibold">月租金（元）</label>
+              <div class="form-control bg-light fw-semibold text-center">1,000 元</div>
+            </div>
+          </div>
+
+          <!-- 預計收款金額即時顯示（依起租日／預計結束日自動計算） -->
+          <div id="rentAmountPreview" class="alert alert-success py-2 px-3 small mb-2 d-none">
+            <div class="d-flex justify-content-between align-items-center">
+              <span class="fw-semibold"><i class="bi bi-cash-coin me-1"></i>預計收款金額</span>
+              <span class="fs-5 fw-bold" id="rentAmountVal">— 元</span>
+            </div>
+            <div class="text-muted mt-1 small" id="rentAmountDetail">—</div>
+          </div>
+          <div class="alert alert-info py-2 px-3 small mb-2">
+            <i class="bi bi-info-circle me-1"></i>建立後請使用面板的「<strong>確認收款</strong>」按鈕記錄實際繳費。
+          </div>
+          <!-- backend 相容用的 hidden helper -->
+          <select id="rentPrepaidMonths" class="d-none"><option value="0" selected>0</option></select>
+          <button id="btnStartRent" class="btn btn-primary w-100 mb-2" onclick="doRent()">
+            <i class="bi bi-file-earmark-plus me-1"></i>開始出租
+          </button>
+        </div>
+
+        <!-- 出租中：顯示資訊 + 操作 -->
+        <div id="panelRented" class="d-none">
+
+          <!-- 待確認退款 -->
+          <div id="pendingRefundAlert" class="d-none alert alert-danger py-2 px-3 mb-2">
+            <div class="d-flex align-items-center gap-2">
+              <div class="flex-fill small">
+                <i class="bi bi-cash-coin me-1"></i>
+                <strong>待退款</strong>：尚未確認退還
+                <strong id="pendingRefundAmountLabel" class="ms-1"></strong> 元給車主
+              </div>
+              <button class="btn btn-sm btn-success text-nowrap" onclick="doConfirmRefund()">
+                <i class="bi bi-check-lg me-1"></i>確認已退款
+              </button>
+            </div>
+            <div class="mt-1">
+              <input type="text" id="refundReason" class="form-control form-control-sm"
+                     placeholder="退款原因（必填，例如：提前退租、車位終止…）">
+            </div>
+            <button class="btn btn-sm btn-outline-secondary w-100 mt-1" onclick="doWaiveFromBanner()">
+              <i class="bi bi-slash-circle me-1"></i>車主告知不需退款
+            </button>
+          </div>
+
+          <!-- 預繳到期警示 -->
+          <div id="prepaidExpiringAlert" class="d-none alert alert-warning py-2 px-3 mb-2 small">
+            <i class="bi bi-bell-fill me-1"></i>
+            <strong>預繳即將結束</strong>，請提醒車主繳費！預繳至
+            <span id="prepaidExpiringDate" class="fw-semibold"></span>
+          </div>
+
+          <!-- 現任車主區塊（橘色框，對應右側下任車主藍色框） -->
+          <div class="rounded p-2 mb-2" style="border:1px solid #fd7e14;">
+          <!-- 主視圖：目前車主資訊 + 編輯 + 繳費 + 動作（設定退租日面板顯示時整塊隱藏） -->
+          <div id="currentTenantMainView">
+          <p class="fw-semibold small mb-1" style="color:#fd7e14;">
+            <i class="bi bi-person-fill me-1"></i>目前車主
+          </p>
+          <!-- 資訊顯示 -->
+          <div id="infoView">
+            <table class="table table-borderless table-sm mb-2">
+              <tr><th style="width:90px">車主</th><td id="infoName">—</td></tr>
+              <tr><th>電話/Line ID</th><td id="infoPhone">—</td></tr>
+              <tr><th>車牌</th><td id="infoPlate">—</td></tr>
+              <tr><th>起租日</th><td id="infoStart">—</td></tr>
+              <tr><th>月租金</th><td id="infoFee">—</td></tr>
+              <tr><th>預計結束</th><td id="infoExpectedEnd">—</td></tr>
+              <tr id="rowPaymentStatus" class="d-none">
+                <th>繳費狀況</th>
+                <td id="infoPaymentStatus">—</td>
+              </tr>
+            </table>
+            <!-- 租期結算 -->
+            <div id="settlementSection" class="d-none mt-2 mb-2 p-2 rounded" style="background:#f8f9fa;border:1px solid #dee2e6;font-size:.85rem;">
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">租期應繳</span>
+                <span id="settleTotalExpected" class="fw-semibold">—</span>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">已繳總額</span>
+                <span id="settleTotalPaid" class="fw-semibold">—</span>
+              </div>
+              <div class="d-flex justify-content-between border-top mt-1 pt-1">
+                <span class="text-muted">差額</span>
+                <span id="settleBalance" class="fw-bold">—</span>
+              </div>
+            </div>
+            <!-- 編輯類按鈕（對應右側「修改預約 / 取消預約」） -->
+            <div class="d-flex gap-2 mb-1">
+              <button class="btn btn-sm btn-outline-primary flex-fill" onclick="toggleRentalEdit(true)">
+                <i class="bi bi-pencil me-1"></i>編輯租約資訊
+              </button>
+              <button class="btn btn-sm btn-outline-danger flex-fill" onclick="openCancelRentalModal()">
+                <i class="bi bi-x-circle me-1"></i>取消租約
+              </button>
+            </div>
+            <div class="mb-1">
+              <button class="btn btn-sm btn-outline-secondary w-100"
+                      onclick="openContractDlg(_currentSpot.rentalId, _currentSpot.tenantName, _currentSpot.spotNumber)">
+                <i class="bi bi-journal-text me-1"></i>合約照片
+                <span id="currentContractBadge" class="badge bg-success ms-1 d-none"></span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 編輯表單（預設隱藏） -->
+          <div id="editView" class="d-none">
+            <div class="mb-2">
+              <label class="form-label fw-semibold small mb-1">車主</label>
+              <select id="editTenantId" class="form-select form-select-sm">
+                {% for t in tenants %}
+                <option value="{{ t.id }}">{{ t.name }}（{{ t.license_plate or '無車牌' }}）</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="row g-2 mb-2">
+              <div class="col-6">
+                <label class="form-label fw-semibold small mb-1">起租日</label>
+                <input type="date" id="editStartDate" class="form-control form-control-sm">
+              </div>
+              <div class="col-6">
+                <label class="form-label fw-semibold small mb-1">月租金（元）</label>
+                <div class="form-control form-control-sm bg-light fw-semibold text-center">1,000 元</div>
+              </div>
+            </div>
+            <div class="mb-2">
+              <label class="form-label fw-semibold small mb-1">預計結束日</label>
+              <input type="date" id="editExpectedEnd" class="form-control form-control-sm bg-light"
+                     readonly>
+              <div class="text-muted mt-1" style="font-size:.75rem;">
+                <i class="bi bi-lock-fill me-1"></i>如需修改結束日，請使用下方「設定退租日」按鈕
+              </div>
+            </div>
+            <div class="d-flex gap-2 mb-1">
+              <button class="btn btn-sm btn-primary flex-fill" onclick="doUpdateRental()">
+                <i class="bi bi-check-lg me-1"></i>儲存
+              </button>
+              <button class="btn btn-sm btn-secondary flex-fill" onclick="toggleRentalEdit(false)">取消</button>
+            </div>
+          </div>
+
+          <hr class="my-2">
+          <div id="paySection">
+            <!-- 待補繳確認橫幅（與右側下任車主相同格式） -->
+            <div id="rentalChargeBanner" class="d-none alert alert-warning py-2 px-3 mb-2">
+              <div class="small mb-1">
+                <i class="bi bi-exclamation-circle-fill me-1"></i>待補繳款 <strong id="rentalChargeAmt" class="text-danger"></strong> 元
+              </div>
+              <div class="d-flex gap-1">
+                <button class="btn btn-sm btn-warning flex-fill" onclick="doConfirmRentalCharge()">
+                  <i class="bi bi-cash-coin me-1"></i>全額收款
+                </button>
+                <button class="btn btn-sm btn-outline-warning flex-fill" onclick="togglePartialChargeForm(true)">
+                  部分收款
+                </button>
+                <button class="btn btn-sm btn-outline-secondary flex-fill" onclick="doWaiveRentalCharge()">
+                  豁免
+                </button>
+              </div>
+              <!-- 部分收款表單 -->
+              <div id="partialChargeForm" class="d-none mt-2">
+                <div class="input-group input-group-sm">
+                  <span class="input-group-text">本次收款</span>
+                  <input type="number" id="partialChargeInput" class="form-control" min="1">
+                  <span class="input-group-text">元</span>
+                  <button class="btn btn-success" onclick="doPartialCharge()">確認</button>
+                  <button class="btn btn-secondary" onclick="togglePartialChargeForm(false)">取消</button>
+                </div>
+                <div class="form-text">輸入本次收款金額，剩餘差額將保留待下次補繳</div>
+              </div>
+            </div>
+            <!-- 有預繳：操作按鈕（狀態文字已移至上方資訊表的「繳費狀況」） -->
+            <div id="payPrepaidSimple" class="d-none">
+              <div id="prepaidSimpleRow" class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+                <button id="prepaidRefundBtn" class="btn btn-sm btn-warning d-none" onclick="toggleInlineEndDate(true)">
+                  <i class="bi bi-arrow-counterclockwise me-1"></i>確認退款 <span id="prepaidRefundAmt"></span> 元
+                </button>
+                <button id="prepaidAddBtn" class="btn btn-sm btn-outline-info" onclick="togglePrepaidAdd(true)">
+                  <i class="bi bi-plus-circle me-1"></i>追加預繳
+                </button>
+              </div>
+              <!-- 追加預繳表單 -->
+              <div id="prepaidAddView" class="d-none mt-2">
+                <div class="mb-2">
+                  <label class="form-label small fw-semibold mb-1">追加預繳月數</label>
+                  <select id="prepaidAddMonths" class="form-select form-select-sm">
+                    <option value="1">1 個月</option>
+                    <option value="2">2 個月</option>
+                    <option value="3">3 個月</option>
+                    <option value="6">6 個月（半年）</option>
+                    <option value="11">11 個月</option>
+                    <option value="12">12 個月（全年）</option>
+                  </select>
+                </div>
+                <div class="text-muted small mb-2">
+                  <i class="bi bi-info-circle me-1"></i>將從最後一筆已繳月份的下個月開始建立記錄
+                </div>
+                <div class="d-flex gap-2">
+                  <button class="btn btn-sm btn-info flex-fill text-white" onclick="doAddPrepaid()">
+                    <i class="bi bi-check-lg me-1"></i>確認追加
+                  </button>
+                  <button class="btn btn-sm btn-secondary" onclick="togglePrepaidAdd(false)">取消</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 無預繳：完整顯示 -->
+            <div id="payDetailSection" class="d-none">
+              <p class="fw-semibold mb-2">本月（<span id="infoMonth"></span>）繳費</p>
+              <!-- 已繳費 -->
+              <div id="alreadyPaid" class="d-none">
+                <div id="alreadyPaidMain" class="d-flex align-items-center gap-2 mb-2">
+                  <span class="text-success fw-semibold">
+                    <i class="bi bi-check-circle-fill me-1"></i>已繳費
+                  </span>
+                  <span class="text-muted small">金額：<strong id="paidAmount"></strong> 元</span>
+                  <button class="btn btn-sm btn-outline-secondary ms-auto" onclick="doDeletePayment()">
+                    <i class="bi bi-x-circle me-1"></i>改為未繳費
+                  </button>
+                </div>
+                <!-- 預繳方案（從已繳月份的下個月起追加） -->
+                <div class="d-flex justify-content-end mb-1">
+                  <button class="btn btn-link btn-sm text-info p-0" onclick="toggleAlreadyPaidPrepaid(true)">
+                    <i class="bi bi-calendar-check me-1"></i>改為預繳方案
+                  </button>
+                </div>
+                <div id="alreadyPaidPrepaidSection" class="d-none border border-info rounded p-2 mb-2">
+                  <p class="small fw-semibold text-info mb-2">
+                    <i class="bi bi-calendar-check me-1"></i>預繳方案（從下個月起連續繳費）
+                  </p>
+                  <div class="mb-2">
+                    <label class="form-label small fw-semibold mb-1">追加月數</label>
+                    <select id="alreadyPaidPrepaidMonths" class="form-select form-select-sm"
+                            onchange="_updateAlreadyPaidHint()">
+                      <option value="fill">補足至結束日（自動計算）</option>
+                      <option value="1">1 個月</option>
+                      <option value="2">2 個月</option>
+                      <option value="3">3 個月</option>
+                      <option value="6">6 個月（半年）</option>
+                      <option value="11">11 個月</option>
+                      <option value="12">12 個月（全年）</option>
+                    </select>
+                  </div>
+                  <div id="alreadyPaidPrepaidHint" class="text-muted small mb-2"></div>
+                  <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-info flex-fill text-white" onclick="doAlreadyPaidPrepaid()">
+                      <i class="bi bi-check-lg me-1"></i>確認追加預繳
+                    </button>
+                    <button class="btn btn-sm btn-secondary" onclick="toggleAlreadyPaidPrepaid(false)">取消</button>
+                  </div>
+                </div>
+                <div id="payEditView" class="d-none">
+                  <div class="input-group input-group-sm mb-2">
+                    <span class="input-group-text">金額</span>
+                    <input type="number" id="payEditAmount" class="form-control" min="0">
+                    <span class="input-group-text">元</span>
+                  </div>
+                  <div class="text-muted small mb-2">
+                    <i class="bi bi-info-circle me-1"></i>提前退租可填半月費用等實際收款金額
+                  </div>
+                  <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-primary flex-fill" onclick="doUpdatePayment()">
+                      <i class="bi bi-check-lg me-1"></i>儲存
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger flex-fill" onclick="doDeletePayment()">
+                      <i class="bi bi-trash me-1"></i>刪除此筆
+                    </button>
+                    <button class="btn btn-sm btn-secondary" onclick="togglePayEdit(false)">取消</button>
+                  </div>
+                </div>
+              </div>
+              <!-- 未繳費 -->
+              <div id="notYetPaid" class="d-none">
+                <!-- 預繳方案（預設顯示） -->
+                <div id="firstPrepaidSection" class="border border-info rounded p-2">
+                  <p class="small fw-semibold text-info mb-2">
+                    <i class="bi bi-calendar-check me-1"></i>預繳方案（從本月起連續繳費）
+                  </p>
+                  <div class="mb-2">
+                    <label class="form-label small fw-semibold mb-1">預繳月數</label>
+                    <select id="firstPrepaidMonths" class="form-select form-select-sm" onchange="_updateFirstPrepaidHint()">
+                      <option value="fill">補足至結束日（自動計算）</option>
+                      <option value="2">2 個月</option>
+                      <option value="3">3 個月</option>
+                      <option value="6">6 個月（半年）</option>
+                      <option value="11">11 個月</option>
+                      <option value="12">12 個月（全年）</option>
+                    </select>
+                  </div>
+                  <div id="firstPrepaidHint" class="text-muted small mb-2"></div>
+                  <button class="btn btn-info w-100 text-white fw-semibold mb-1" onclick="doFirstPrepaid()">
+                    <i class="bi bi-check-lg me-1"></i>確認預繳
+                  </button>
+                  <div class="d-flex justify-content-end">
+                    <button class="btn btn-link btn-sm text-secondary p-0" onclick="toggleFirstPrepaid(false)">
+                      <i class="bi bi-cash me-1"></i>改為單月繳費
+                    </button>
+                  </div>
+                </div>
+                <!-- 單月收款（隱藏，可切換） -->
+                <div id="singlePaySection" class="d-none">
+                  <div class="input-group mb-1">
+                    <span class="input-group-text">金額</span>
+                    <input type="number" id="payAmount" class="form-control" min="0">
+                    <span class="input-group-text">元</span>
+                    <button class="btn btn-success" onclick="doPay()">
+                      <i class="bi bi-cash-coin me-1"></i>確認收款
+                    </button>
+                  </div>
+                  <div class="d-flex align-items-center justify-content-between">
+                    <div class="text-muted small">
+                      <i class="bi bi-info-circle me-1"></i>提前退租可填半月費用等實際收款金額
+                    </div>
+                    <button class="btn btn-link btn-sm text-info p-0" onclick="toggleFirstPrepaid(true)">
+                      <i class="bi bi-calendar-check me-1"></i>改為預繳方案
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <hr class="my-2">
+          <!-- 主要 + 次要動作（內嵌 設定退租日 面板顯示時隱藏這段） -->
+          <div id="currentTenantBottomActions">
+            <div class="d-flex gap-2 mb-1">
+              <button class="btn btn-outline-warning flex-fill" onclick="toggleInlineEndDate(true)">
+                <i class="bi bi-x-circle me-1"></i>設定退租日
+              </button>
+              <button id="btnSetNextTenant" class="btn btn-outline-primary flex-fill" onclick="openTransferModal()">
+                <i class="bi bi-person-fill-up me-1"></i>預約/延長合約
+              </button>
+            </div>
+            <button class="btn btn-outline-secondary w-100" onclick="openMoveModal()">
+              <i class="bi bi-arrow-left-right me-1"></i>更換車位
+            </button>
+          </div>
+          </div><!-- /currentTenantMainView -->
+
+          <!-- 內嵌設定退租日面板（取代舊彈窗） -->
+          <div id="inlineEndDatePanel" class="d-none">
+            <p class="fw-semibold small mb-2" style="color:#fd7e14;">
+              <i class="bi bi-x-circle me-1"></i>設定退租日
+            </p>
+            <div class="mb-2">
+              <label class="form-label fw-semibold small mb-1">退租日期</label>
+              <input type="date" id="endDate" class="form-control form-control-sm" onchange="updateEndRefund()">
+            </div>
+            <div id="endRefundDone" class="d-none alert alert-success py-2 px-3 mb-2 small">
+              <i class="bi bi-check-circle-fill me-1"></i>已退款
+              <strong id="endRefundDoneAmt"></strong> 元（已足額，本次無需補退）
+            </div>
+            <div id="endRefundConflict" class="d-none alert alert-warning py-2 px-3 mb-2 small">
+              <i class="bi bi-exclamation-triangle-fill me-1"></i>
+              <span id="endRefundConflictMsg"></span>
+            </div>
+            <div id="endSettlementSummary" class="d-none mt-2 mb-2 p-2 rounded" style="background:#f8f9fa;border:1px solid #dee2e6;font-size:.85rem;">
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">租期應繳</span>
+                <span id="endSettleExpected" class="fw-semibold">—</span>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">已繳總額</span>
+                <span id="endSettlePaid" class="fw-semibold">—</span>
+              </div>
+              <div class="d-flex justify-content-between border-top mt-1 pt-1">
+                <span class="text-muted">差額</span>
+                <span id="endSettleBalance" class="fw-bold">—</span>
+              </div>
+            </div>
+            <input type="hidden" id="refundAmount" value="0">
+            <div id="endChargeSection" class="d-none">
+              <div class="alert alert-warning py-2 px-3 mb-2 small">
+                <i class="bi bi-exclamation-circle-fill me-1"></i>結算差額（<strong id="endChargePaidUntil"></strong>），建議補繳
+                <strong id="endChargeSuggest" class="text-danger"></strong> 元
+              </div>
+              <div class="mb-2">
+                <label class="form-label fw-semibold small mb-1">補繳金額（元）<span class="text-muted fw-normal small">（可手動調整）</span></label>
+                <div class="input-group input-group-sm">
+                  <input type="number" id="extraChargeAmount" class="form-control" value="0" min="0">
+                  <span class="input-group-text">元</span>
+                </div>
+                <div class="form-text">填 0 表示不補繳；補繳將自動記入繳費記錄</div>
+              </div>
+            </div>
+            <div id="endRefundSuggestion" class="d-none alert alert-info py-2 px-3 mb-2 small">
+              <i class="bi bi-lightbulb me-1"></i>建議退款
+              <strong id="endRefundSuggest" class="text-primary"></strong> 元（依天數比例）
+            </div>
+            <div class="d-flex gap-2 mb-1">
+              <button id="endSubmitBtn" class="btn btn-sm btn-warning fw-semibold flex-fill" onclick="doEnd()">
+                <i class="bi bi-check-lg me-1"></i>確認
+              </button>
+              <button class="btn btn-sm btn-secondary flex-fill" onclick="toggleInlineEndDate(false)">取消</button>
+            </div>
+          </div>
+          </div><!-- /現任車主橘色框 -->
+
+        </div>
+
+        </div><!-- /spotMainCol -->
+
+        <!-- 右欄：下任車主（已預約）— 三個情境共用同一容器，僅顯示其中一個 -->
+        <div class="d-none" id="spotFutureCol" style="flex:1 1 0;min-width:0;">
+
+          <!-- 待確認退款（下任車主，與現任車主橫幅同格式） -->
+          <div id="pendingFutureRefundAlert" class="d-none alert alert-danger py-2 px-3 mb-2">
+            <div class="d-flex align-items-center gap-2">
+              <div class="flex-fill small">
+                <i class="bi bi-cash-coin me-1"></i>
+                <strong>待退款</strong>：尚未確認退還
+                <strong id="pendingFutureRefundAmountLabel" class="ms-1"></strong> 元給車主
+              </div>
+              <button class="btn btn-sm btn-success text-nowrap" onclick="doConfirmFutureRefundFromBanner()">
+                <i class="bi bi-check-lg me-1"></i>確認已退款
+              </button>
+            </div>
+            <div class="mt-1">
+              <input type="text" id="futureRefundReason" class="form-control form-control-sm"
+                     placeholder="退款原因（必填，例如：提前退租、車位終止…）">
+            </div>
+            <button class="btn btn-sm btn-outline-secondary w-100 mt-1" onclick="doWaiveFutureRefundFromBanner()">
+              <i class="bi bi-slash-circle me-1"></i>車主告知不需退款
+            </button>
+          </div>
+
+          <!-- 下一位車主資訊（預約換租：current rental 的 next_* 欄位） -->
+          <div id="nextTenantSection" class="d-none border border-info rounded p-2 mb-2">
+            <p class="fw-semibold small mb-1 text-info">
+              <i class="bi bi-person-fill-up me-1"></i>下一位車主（預約換租）
+            </p>
+            <!-- 資訊顯示 -->
+            <div id="nextInfoView">
+              <table class="table table-borderless table-sm mb-2">
+                <tr><th style="width:90px">車主</th><td id="nextInfoName">—</td></tr>
+                <tr><th>電話/Line ID</th><td id="nextInfoPhone">—</td></tr>
+                <tr><th>車牌</th><td id="nextInfoPlate">—</td></tr>
+                <tr><th>起租日</th><td id="nextInfoStart">—</td></tr>
+                <tr><th>月租金</th><td>1000 元</td></tr>
+                <tr><th>預計結束</th><td id="nextInfoEnd">—</td></tr>
+                <tr><th>繳費狀況</th><td id="nextInfoPay">—</td></tr>
+              </table>
+              <!-- 結算面板（與現任版面對齊） -->
+              <div id="nextTenantSettlement" class="d-none mt-2 mb-2 p-2 rounded" style="background:#f8f9fa;border:1px solid #dee2e6;font-size:.85rem;">
+                <div class="d-flex justify-content-between">
+                  <span class="text-muted">租期應繳</span>
+                  <span id="nextTenantSettleExp" class="fw-semibold">—</span>
+                </div>
+                <div class="d-flex justify-content-between">
+                  <span class="text-muted">已繳總額</span>
+                  <span id="nextTenantSettlePaid" class="fw-semibold">—</span>
+                </div>
+                <div class="d-flex justify-content-between border-top mt-1 pt-1">
+                  <span class="text-muted">差額</span>
+                  <span id="nextTenantSettleBal" class="fw-bold">—</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 編輯預約資訊（預設隱藏；對應左側「編輯租約資訊」） -->
+            <div id="nextEditView" class="d-none">
+              <div class="mb-2">
+                <label class="form-label fw-semibold small mb-1">車主</label>
+                <select id="nextEditTenantId" class="form-select form-select-sm">
+                  {% for t in tenants %}
+                  <option value="{{ t.id }}">{{ t.name }}（{{ t.license_plate or '無車牌' }}）</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="mb-2">
+                <label class="form-label fw-semibold small mb-1">起租日</label>
+                <input type="date" id="nextEditStartDate" class="form-control form-control-sm">
+              </div>
+              <div class="mb-2">
+                <label class="form-label fw-semibold small mb-1">預計結束日</label>
+                <input type="date" id="nextEditExpectedEnd" class="form-control form-control-sm">
+              </div>
+              <div class="d-flex gap-2 mb-1">
+                <button class="btn btn-sm btn-primary flex-fill" onclick="doUpdateNextTenant()">
+                  <i class="bi bi-check-lg me-1"></i>儲存
+                </button>
+                <button class="btn btn-sm btn-secondary flex-fill" onclick="toggleNextTenantEdit(false)">取消</button>
+              </div>
+            </div>
+
+            <!-- 編輯類按鈕（對應左側「編輯租約資訊」） -->
+            <div id="nextEditBtnRow" class="d-flex gap-2 mb-1">
+              <button class="btn btn-sm btn-outline-primary flex-fill" onclick="toggleNextTenantEdit(true)">
+                <i class="bi bi-pencil me-1"></i>編輯預約資訊
+              </button>
+              <button class="btn btn-sm btn-outline-danger flex-fill" onclick="doCancelTransfer()">
+                <i class="bi bi-x-circle me-1"></i>取消預約
+              </button>
+            </div>
+            <hr class="my-2">
+
+            <!-- 轉移至其他車位（隱藏面板，由「更換車位」按鈕觸發） -->
+            <div id="nextTransferSection" class="d-none mb-2">
+              <div class="input-group input-group-sm mb-1">
+                <select id="nextTransferSpot" class="form-select form-select-sm">
+                  <option value="">— 選擇空置車位 —</option>
+                </select>
+                <button class="btn btn-sm btn-info text-white" onclick="doTransferToVacant()">確認轉移</button>
+                <button class="btn btn-sm btn-secondary"
+                        onclick="document.getElementById('nextTransferSection').classList.add('d-none')">取消</button>
+              </div>
+              <div class="small text-muted">轉移後將立即建立租約，並清除此車位的預約記錄。</div>
+            </div>
+
+            <!-- 待補繳款 banner（與現任車主同格式：文字在上、3 按鈕等寬於下） -->
+            <div id="nextChargeBanner" class="d-none alert alert-warning py-2 px-3 mb-2">
+              <div class="small mb-1">
+                <i class="bi bi-exclamation-circle-fill me-1"></i>待補繳款 <strong id="nextChargeAmt" class="text-danger"></strong> 元
+              </div>
+              <div class="d-flex gap-1">
+                <button class="btn btn-sm btn-warning flex-fill" onclick="doConfirmNextFullCharge()">
+                  <i class="bi bi-cash-coin me-1"></i>全額收款
+                </button>
+                <button class="btn btn-sm btn-outline-warning flex-fill" onclick="toggleNextPartialChargeForm(true)">
+                  部分收款
+                </button>
+                <button class="btn btn-sm btn-outline-secondary flex-fill" onclick="doWaiveNextCharge()">
+                  豁免
+                </button>
+              </div>
+              <div id="nextPartialChargeForm" class="d-none mt-2">
+                <div class="input-group input-group-sm">
+                  <span class="input-group-text">本次收款</span>
+                  <input type="number" id="nextPartialChargeInput" class="form-control" min="1">
+                  <span class="input-group-text">元</span>
+                  <button class="btn btn-success" onclick="doNextPartialCharge()">確認</button>
+                  <button class="btn btn-secondary" onclick="toggleNextPartialChargeForm(false)">取消</button>
+                </div>
+                <div class="form-text">輸入本次收款金額，剩餘差額將保留待下次補繳</div>
+              </div>
+            </div>
+            <div id="nextPayDone" class="d-none alert alert-success py-1 px-2 small mb-2">
+              <i class="bi bi-check-circle-fill me-1"></i>已記錄收款，請至下一位車主面板查看
+            </div>
+
+            <hr class="my-2">
+            <!-- 次要動作（對應左側「更換車位 / 取消租約」） -->
+            <button class="btn btn-outline-secondary w-100" onclick="openNextTransfer()">
+              <i class="bi bi-arrow-left-right me-1"></i>更換車位
+            </button>
+          </div>
+
+          <!-- 下一位車主（已預約）— 空置車位的預約 -->
+          <div id="vacantFutureSection" class="d-none border border-info rounded p-2">
+            <p class="fw-semibold small text-info mb-1">
+              <i class="bi bi-calendar-event-fill me-1"></i>下一位車主（已預約）
+            </p>
+            <table class="table table-borderless table-sm mb-2">
+              <tr><th style="width:90px">車主</th><td id="vacantFutureName">—</td></tr>
+              <tr><th>電話/Line ID</th><td id="vacantFuturePhone">—</td></tr>
+              <tr><th>車牌</th><td id="vacantFuturePlate">—</td></tr>
+              <tr><th>起租日</th><td id="vacantFutureStart">—</td></tr>
+              <tr><th>月租金</th><td>1000 元</td></tr>
+              <tr><th>預計結束</th><td id="vacantFutureEnd">—</td></tr>
+              <tr><th>繳費狀況</th><td id="vacantFuturePay">—</td></tr>
+            </table>
+            <!-- 結算面板（與現任版面對齊） -->
+            <div id="vacantFutureSettlement" class="d-none mt-2 mb-2 p-2 rounded" style="background:#f8f9fa;border:1px solid #dee2e6;font-size:.85rem;">
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">租期應繳</span>
+                <span id="vacantFutureSettleExp" class="fw-semibold">—</span>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">已繳總額</span>
+                <span id="vacantFutureSettlePaid" class="fw-semibold">—</span>
+              </div>
+              <div class="d-flex justify-content-between border-top mt-1 pt-1">
+                <span class="text-muted">差額</span>
+                <span id="vacantFutureSettleBal" class="fw-bold">—</span>
+              </div>
+            </div>
+            <!-- 編輯類按鈕（對應左側「編輯租約資訊」） -->
+            <div class="d-flex gap-2 mb-1">
+              <button class="btn btn-sm btn-outline-primary flex-fill" onclick="toggleInlineFutureEdit(true)">
+                <i class="bi bi-pencil me-1"></i>修改預約
+              </button>
+              <button class="btn btn-sm btn-outline-danger flex-fill" onclick="openCancelFutureModal()">
+                <i class="bi bi-x-circle me-1"></i>取消預約
+              </button>
+            </div>
+            <div class="mb-1">
+              <button class="btn btn-sm btn-outline-secondary w-100"
+                      onclick="openContractDlg(_currentSpot.futureRentalId, _currentSpot.futureTenantName, _currentSpot.spotNumber)">
+                <i class="bi bi-journal-text me-1"></i>合約照片
+                <span id="vacantFutureContractBadge" class="badge bg-success ms-1 d-none"></span>
+              </button>
+            </div>
+            <hr class="my-2">
+            <!-- 主要動作：補繳 / 確認收款（退款橫幅已移至上方對齊現任格式） -->
+            <div id="vacantFutureChargeGroup" class="d-none alert alert-warning py-2 px-3 mb-2">
+              <div class="small mb-1">
+                <i class="bi bi-exclamation-circle-fill me-1"></i>待補繳款 <strong id="vacantFutureChargeAmt" class="text-danger"></strong> 元
+              </div>
+              <div class="d-flex gap-1">
+                <button id="vacantFutureConfirmCharge" class="btn btn-sm btn-warning flex-fill" onclick="doConfirmFutureCharge()">
+                  <i class="bi bi-cash-coin me-1"></i>全額收款
+                </button>
+                <button class="btn btn-sm btn-outline-warning flex-fill" onclick="toggleFuturePartialChargeForm(true, 'vacant')">
+                  部分收款
+                </button>
+                <button class="btn btn-sm btn-outline-secondary flex-fill" onclick="doWaiveFutureCharge()">
+                  豁免
+                </button>
+              </div>
+              <div id="vacantFuturePartialChargeForm" class="d-none mt-2">
+                <div class="input-group input-group-sm">
+                  <span class="input-group-text">本次收款</span>
+                  <input type="number" id="vacantFuturePartialChargeInput" class="form-control" min="1">
+                  <span class="input-group-text">元</span>
+                  <button class="btn btn-success" onclick="doFuturePartialCharge('vacant')">確認</button>
+                  <button class="btn btn-secondary" onclick="toggleFuturePartialChargeForm(false, 'vacant')">取消</button>
+                </div>
+                <div class="form-text">輸入本次收款金額，剩餘差額將保留待下次補繳</div>
+              </div>
+            </div>
+            <button id="vacantFuturePayBtn" class="btn btn-success w-100 d-none mb-1" onclick="openFuturePayModal()">
+              <i class="bi bi-cash-coin me-1"></i>確認收款
+            </button>
+            <hr class="my-2">
+            <!-- 次要動作：更換車位（對應左側「更換車位 / 取消租約」） -->
+            <button class="btn btn-outline-secondary w-100" onclick="openMoveFutureModal()">
+              <i class="bi bi-arrow-left-right me-1"></i>更換車位
+            </button>
+          </div>
+
+          <!-- 預約的下一位車主（分開的獨立租約）— 出租中車位的預約 -->
+          <div id="futureBookingSection" class="d-none border border-info rounded p-2">
+            <p class="fw-semibold small text-info mb-1">
+              <i class="bi bi-calendar-event-fill me-1"></i>下一位車主（已預約）
+            </p>
+            <table class="table table-borderless table-sm mb-2">
+              <tr><th style="width:90px">車主</th><td id="futureBookingName">—</td></tr>
+              <tr><th>電話/Line ID</th><td id="futureBookingPhone">—</td></tr>
+              <tr><th>車牌</th><td id="futureBookingPlate">—</td></tr>
+              <tr><th>起租日</th><td id="futureBookingStart">—</td></tr>
+              <tr><th>月租金</th><td>1000 元</td></tr>
+              <tr><th>預計結束</th><td id="futureBookingEnd">—</td></tr>
+              <tr><th>繳費狀況</th><td id="futureBookingPay">—</td></tr>
+            </table>
+            <!-- 結算面板（與現任版面對齊） -->
+            <div id="futureBookingSettlement" class="d-none mt-2 mb-2 p-2 rounded" style="background:#f8f9fa;border:1px solid #dee2e6;font-size:.85rem;">
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">租期應繳</span>
+                <span id="futureBookingSettleExp" class="fw-semibold">—</span>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">已繳總額</span>
+                <span id="futureBookingSettlePaid" class="fw-semibold">—</span>
+              </div>
+              <div class="d-flex justify-content-between border-top mt-1 pt-1">
+                <span class="text-muted">差額</span>
+                <span id="futureBookingSettleBal" class="fw-bold">—</span>
+              </div>
+            </div>
+            <!-- 編輯類按鈕（對應左側「編輯租約資訊」） -->
+            <div class="d-flex gap-2 mb-1">
+              <button class="btn btn-sm btn-outline-primary flex-fill" onclick="toggleInlineFutureEdit(true)">
+                <i class="bi bi-pencil me-1"></i>修改預約
+              </button>
+              <button class="btn btn-sm btn-outline-danger flex-fill" onclick="openCancelFutureModal()">
+                <i class="bi bi-x-circle me-1"></i>取消預約
+              </button>
+            </div>
+            <div class="mb-1">
+              <button class="btn btn-sm btn-outline-secondary w-100"
+                      onclick="openContractDlg(_currentSpot.futureRentalId, _currentSpot.futureTenantName, _currentSpot.spotNumber)">
+                <i class="bi bi-journal-text me-1"></i>合約照片
+                <span id="futureContractBadge" class="badge bg-success ms-1 d-none"></span>
+              </button>
+            </div>
+            <hr class="my-2">
+            <!-- 主要動作（退款橫幅已移至上方對齊現任格式） -->
+            <div id="futureBookingChargeGroup" class="d-none alert alert-warning py-2 px-3 mb-2">
+              <div class="small mb-1">
+                <i class="bi bi-exclamation-circle-fill me-1"></i>待補繳款 <strong id="futureBookingChargeAmt" class="text-danger"></strong> 元
+              </div>
+              <div class="d-flex gap-1">
+                <button id="futureBookingConfirmCharge" class="btn btn-sm btn-warning flex-fill" onclick="doConfirmFutureCharge()">
+                  <i class="bi bi-cash-coin me-1"></i>全額收款
+                </button>
+                <button class="btn btn-sm btn-outline-warning flex-fill" onclick="toggleFuturePartialChargeForm(true)">
+                  部分收款
+                </button>
+                <button class="btn btn-sm btn-outline-secondary flex-fill" onclick="doWaiveFutureCharge()">
+                  豁免
+                </button>
+              </div>
+              <div id="futurePartialChargeForm" class="d-none mt-2">
+                <div class="input-group input-group-sm">
+                  <span class="input-group-text">本次收款</span>
+                  <input type="number" id="futurePartialChargeInput" class="form-control" min="1">
+                  <span class="input-group-text">元</span>
+                  <button class="btn btn-success" onclick="doFuturePartialCharge()">確認</button>
+                  <button class="btn btn-secondary" onclick="toggleFuturePartialChargeForm(false)">取消</button>
+                </div>
+                <div class="form-text">輸入本次收款金額，剩餘差額將保留待下次補繳</div>
+              </div>
+            </div>
+            <button id="futureBookingPayBtn" class="btn btn-success w-100 d-none mb-1" onclick="openFuturePayModal()">
+              <i class="bi bi-cash-coin me-1"></i>確認收款
+            </button>
+            <hr class="my-2">
+            <!-- 次要動作：更換車位（對應左側「更換車位 / 取消租約」） -->
+            <button class="btn btn-outline-secondary w-100" onclick="openMoveFutureModal()">
+              <i class="bi bi-arrow-left-right me-1"></i>更換車位
+            </button>
+          </div>
+
+          <!-- 後續預約（第二筆以後，動態產生） -->
+          <div id="extraFuturesContainer"></div>
+
+          <!-- 修改預約（內嵌編輯面板，對應現任車主的 editView） -->
+          <div id="inlineFutureEditPanel" class="d-none border border-info rounded p-2 mb-2">
+            <p class="fw-semibold small mb-2 text-info">
+              <i class="bi bi-pencil me-1"></i>修改預約
+            </p>
+            <div class="mb-2">
+              <label class="form-label fw-semibold small mb-1">車主</label>
+              <select id="inlineEditFutureTenant" class="form-select form-select-sm">
+                <option value="">— 選擇車主 —</option>
+                {% for t in tenants %}
+                <option value="{{ t.id }}">{{ t.name }}（{{ t.license_plate or '無車牌' }}）</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="row g-2 mb-2">
+              <div class="col-6">
+                <label class="form-label fw-semibold small mb-1">起租日</label>
+                <input type="date" id="inlineEditFutureStart" class="form-control form-control-sm"
+                       onchange="_inlineCheckEditFutureConflict(); _inlineUpdateEditFutureAdjust();">
+              </div>
+              <div class="col-6">
+                <label class="form-label fw-semibold small mb-1">預計結束日</label>
+                <input type="date" id="inlineEditFutureEnd" class="form-control form-control-sm"
+                       onchange="_inlineUpdateEditFutureAdjust()">
+              </div>
+            </div>
+            <div id="inlineEditFutureConflict" class="d-none alert alert-danger py-2 px-3 small mb-2">
+              <i class="bi bi-exclamation-triangle-fill me-1"></i>
+              <span id="inlineEditFutureConflictMsg"></span>
+            </div>
+            <div id="inlineEditFutureSettlement" class="d-none mt-2 mb-2 p-2 rounded" style="background:#f8f9fa;border:1px solid #dee2e6;font-size:.85rem;">
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">租期應繳</span>
+                <span id="inlineEditFutureSettleExp" class="fw-semibold">—</span>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">已繳總額</span>
+                <span id="inlineEditFutureSettlePaid" class="fw-semibold">—</span>
+              </div>
+              <div class="d-flex justify-content-between border-top mt-1 pt-1">
+                <span class="text-muted">差額</span>
+                <span id="inlineEditFutureSettleBal" class="fw-bold">—</span>
+              </div>
+            </div>
+            <div id="inlineEditFutureAdjustSection" class="d-none mb-2">
+              <div id="inlineEditFutureRefundPart" class="d-none">
+                <div class="alert alert-info py-2 px-3 mb-2 small">
+                  <i class="bi bi-lightbulb me-1"></i>建議退費
+                  <strong id="inlineEditFutureRefundSuggest" class="text-primary"></strong> 元（結束日縮短）
+                </div>
+                <input type="hidden" id="inlineEditFutureRefundAmt" value="0">
+              </div>
+              <input type="hidden" id="inlineEditFutureChargeAmt" value="0">
+              <div id="inlineEditFutureChargePart" class="d-none">
+                <div class="alert alert-success py-2 px-3 small mb-0">
+                  <i class="bi bi-info-circle me-1"></i>起租日/結束日延長，預計補繳
+                  <strong id="inlineEditFutureChargeSuggest" class="text-success"></strong> 元
+                  <br><span class="text-muted">儲存後，請使用面板上的「<strong>確認收款</strong>」按鈕記錄補繳。</span>
+                </div>
+              </div>
+            </div>
+            <div class="d-flex gap-2 mb-1">
+              <button class="btn btn-sm btn-primary flex-fill" onclick="doInlineEditFutureBooking()">
+                <i class="bi bi-check-lg me-1"></i>儲存
+              </button>
+              <button class="btn btn-sm btn-secondary flex-fill" onclick="toggleInlineFutureEdit(false)">取消</button>
+            </div>
+          </div>
+
+        </div><!-- /spotFutureCol -->
+
+       </div><!-- /spotBodyLayout -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── 設定退租日 Modal ── -->
+<!-- ── 設定下一位車主 Modal ── -->
+<div class="modal fade" id="transferModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header bg-primary text-white">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-person-fill-up me-2"></i>設定下一位車主 &mdash; 車位 <span id="transferModalSpot"></span>
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" onclick="backToSpotModal()"></button>
+      </div>
+      <div class="modal-body">
+        <!-- 車主來源切換 -->
+        <div class="btn-group w-100 mb-3" role="group">
+          <button type="button" id="tabTransferSelect"
+                  class="btn btn-outline-primary btn-sm active"
+                  onclick="switchTransferTab('select')">
+            <i class="bi bi-person-check me-1"></i>選擇現有車主
+          </button>
+          <button type="button" id="tabTransferNew"
+                  class="btn btn-outline-primary btn-sm"
+                  onclick="switchTransferTab('new')">
+            <i class="bi bi-person-plus me-1"></i>新增車主
+          </button>
+        </div>
+        <!-- 選擇現有車主 -->
+        <div id="sectionTransferSelect" class="mb-3">
+          <select id="transferTenantId" class="form-select">
+            <option value="">— 選擇 —</option>
+            {% for t in tenants %}
+            <option value="{{ t.id }}">{{ t.name }}（{{ t.license_plate or '無車牌' }}）</option>
+            {% endfor %}
+          </select>
+        </div>
+        <!-- 新增車主 -->
+        <div id="sectionTransferNew" class="d-none mb-3">
+          <div class="mb-2">
+            <input type="text" id="transferNewName" class="form-control" placeholder="姓名（必填）">
+          </div>
+          <div class="mb-2">
+            <input type="text" id="transferNewPhone" class="form-control" placeholder="電話/Line ID（必填，作為唯一身份識別）">
+          </div>
+          <div class="mb-2">
+            <input type="text" id="transferNewPlate" class="form-control" placeholder="車牌號碼（選填）">
+          </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-6">
+            <label class="form-label fw-semibold">起租日</label>
+            <input type="date" id="transferStartDate" class="form-control"
+                   onchange="updateTransferExpectedEnd(); updateTransferRefund(); _checkTransferDateConflict()">
+            <div id="transferDateConflict" class="d-none alert alert-danger py-2 px-3 mt-1 mb-0 small lh-lg">
+              <span id="transferDateConflictMsg"></span>
+            </div>
+          </div>
+          <div class="col-6">
+            <label class="form-label fw-semibold">租幾個月</label>
+            <select id="transferDurationMonths" class="form-select" onchange="updateTransferExpectedEnd()">
+              <option value="1">1 個月</option>
+              <option value="2">2 個月</option>
+              <option value="3">3 個月</option>
+              <option value="6">6 個月（半年）</option>
+              <option value="12" selected>12 個月（1 年）</option>
+              <option value="24">24 個月（2 年）</option>
+            </select>
+          </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-6">
+            <label class="form-label fw-semibold">預計結束日 <span class="text-muted fw-normal small">（可調整）</span></label>
+            <input type="date" id="transferExpectedEnd" class="form-control">
+          </div>
+          <div class="col-6">
+            <label class="form-label fw-semibold">月租金（元）</label>
+            <div class="form-control bg-light fw-semibold text-center">1,000 元</div>
+          </div>
+        </div>
+        <!-- 下一位車主預付月數：UI 隱藏，仍以預設值 12 送出供 scheduler 啟用未來租約時建立預繳記錄 -->
+        <div class="mb-3 d-none">
+          <label class="form-label fw-semibold">下一位車主預付月數</label>
+          <select id="transferPrepaidMonths" class="form-select">
+            <option value="1">1 個月</option>
+            <option value="2">2 個月</option>
+            <option value="3">3 個月</option>
+            <option value="6">6 個月（半年）</option>
+            <option value="12" selected>12 個月（全年）</option>
+          </select>
+        </div>
+        <div class="mb-2 d-none" id="transferRefundSection">
+          <label class="form-label fw-semibold">前任退費金額（元）</label>
+          <div id="transferRefundDone" class="d-none alert alert-success py-2 px-3 mb-2 small">
+            <i class="bi bi-check-circle-fill me-1"></i>已退款
+            <strong id="transferRefundDoneAmt"></strong> 元（已足額，本次無需補退）
+          </div>
+          <div id="transferRefundSuggestion" class="d-none alert alert-info py-2 px-3 mb-2 small">
+            <i class="bi bi-lightbulb me-1"></i>建議退款
+            <strong id="transferRefundSuggest" class="text-primary"></strong> 元（依天數比例）
+          </div>
+          <div id="transferRefundConflict" class="d-none alert alert-warning py-2 px-3 mb-2 small">
+            <i class="bi bi-exclamation-triangle-fill me-1"></i>
+            <span id="transferRefundConflictMsg"></span>
+          </div>
+          <div class="input-group">
+            <input type="number" id="transferRefund" class="form-control" value="0" min="0">
+            <span class="input-group-text">元</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="backToSpotModal()">
+          <i class="bi bi-arrow-left me-1"></i>返回
+        </button>
+        <button id="transferConfirmBtn" class="btn btn-primary fw-semibold" onclick="doTransfer()">
+          <i class="bi bi-check-lg me-1"></i><span id="transferConfirmBtnLabel">確認預約</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── 更換車位 Modal ── -->
+<div class="modal fade" id="moveModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-secondary text-white">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-arrow-left-right me-2"></i>更換車位 &mdash; 車位 <span id="moveModalSpot"></span>
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" onclick="backToSpotModal()"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-3">
+          <i class="bi bi-info-circle me-1"></i>將直接更換租約所屬車位，所有繳費記錄同步移轉。
+        </p>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">選擇目標空置車位</label>
+          <select id="moveTargetSpot" class="form-select">
+            <option value="">— 選擇空置車位 —</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="backToSpotModal()">
+          <i class="bi bi-arrow-left me-1"></i>返回
+        </button>
+        <button class="btn btn-dark fw-semibold" onclick="doMoveRental()">
+          <i class="bi bi-check-lg me-1"></i>確認更換
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── 取消預約 Modal ── -->
+<div class="modal fade" id="cancelFutureModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-danger text-white">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-x-circle me-2"></i>取消預約 &mdash; 車位 <span id="cancelFutureSpot"></span>
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" onclick="backToSpotModal()"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-warning py-2 px-3 mb-3 small">
+          <i class="bi bi-exclamation-triangle-fill me-1"></i>
+          取消後此預約將清除，若車主已預繳請確認退款金額。
+        </div>
+        <table class="table table-borderless table-sm mb-3">
+          <tr><th style="width:90px">下位車主</th><td id="cancelFutureName">—</td></tr>
+          <tr><th>起租日</th><td id="cancelFutureStart">—</td></tr>
+          <tr><th>已預繳</th><td id="cancelFuturePaid">—</td></tr>
+        </table>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">退費金額（元）<span class="text-muted fw-normal small">（可調整）</span></label>
+          <div class="input-group">
+            <input type="number" id="cancelFutureRefund" class="form-control" min="0">
+            <span class="input-group-text">元</span>
+          </div>
+          <div class="form-text">填 0 表示不退費；退費將記入支出（待確認）</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="backToSpotModal()">
+          <i class="bi bi-arrow-left me-1"></i>返回
+        </button>
+        <button class="btn btn-danger fw-semibold" onclick="doCancelFutureBooking()">
+          <i class="bi bi-check-lg me-1"></i>確認取消預約
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── 取消租約 Modal（現任車主）── -->
+<div class="modal fade" id="cancelRentalModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-danger text-white">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-x-octagon me-2"></i>取消租約 &mdash; 車位 <span id="cancelRentalSpot"></span>
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" onclick="backToSpotModal()"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-warning py-2 px-3 mb-3 small">
+          <i class="bi bi-exclamation-triangle-fill me-1"></i>
+          將立即結束此租約（退租日為今日），請確認退款金額。
+        </div>
+        <table class="table table-borderless table-sm mb-3">
+          <tr><th style="width:90px">車主</th><td id="cancelRentalName">—</td></tr>
+          <tr><th>起租日</th><td id="cancelRentalStart">—</td></tr>
+          <tr><th>已繳</th><td id="cancelRentalPaid">—</td></tr>
+          <tr><th>使用月數</th><td id="cancelRentalUsed">—</td></tr>
+          <tr><th>應收</th><td id="cancelRentalCharge">—</td></tr>
+        </table>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">退費金額（元）<span class="text-muted fw-normal small">（可調整）</span></label>
+          <div class="input-group">
+            <input type="number" id="cancelRentalRefund" class="form-control" min="0">
+            <span class="input-group-text">元</span>
+          </div>
+          <div class="form-text">填 0 表示不退費；退費將記入支出（待確認）</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="backToSpotModal()">
+          <i class="bi bi-arrow-left me-1"></i>返回
+        </button>
+        <button class="btn btn-danger fw-semibold" onclick="doCancelRental()">
+          <i class="bi bi-check-lg me-1"></i>確認取消並結束租約
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── 修改預約 Modal ── -->
+<!-- ── 確認收款 Modal（預約未來租約） ── -->
+<div class="modal fade" id="futurePayModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-success text-white">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-cash-coin me-2"></i>確認收款 &mdash; 車位 <span id="futurePaySpot"></span>
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" onclick="backToSpotModal()"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-2 small text-muted">
+          車主：<strong id="futurePayTenant"></strong>｜起租日：<strong id="futurePayStart"></strong>
+        </div>
+        <div id="futurePayCurrentInfo" class="d-none alert alert-info py-2 px-3 mb-3 small">
+          <i class="bi bi-info-circle me-1"></i>已預繳 <strong id="futurePayAlreadyMonths"></strong> 個月，預繳至 <strong id="futurePayAlreadyUntil"></strong>
+        </div>
+        <!-- 有預計結束日：自動計算全期金額 -->
+        <div id="futurePayAutoSection" class="d-none">
+          <div class="alert alert-success py-2 px-3 mb-2">
+            <div class="d-flex justify-content-between align-items-center">
+              <span class="fw-semibold">收款金額</span>
+              <span class="fs-5 fw-bold text-success" id="futurePayAutoAmount">—</span>
+            </div>
+            <div class="text-muted small mt-1" id="futurePayAutoDetail">—</div>
+          </div>
+        </div>
+        <!-- 無預計結束日：手動選擇月數 -->
+        <div id="futurePayManualSection" class="d-none mb-3">
+          <label class="form-label fw-semibold">收款月數</label>
+          <select id="futurePayMonths" class="form-select">
+            <option value="1">1 個月（1,000 元）</option>
+            <option value="2">2 個月（2,000 元）</option>
+            <option value="3">3 個月（3,000 元）</option>
+            <option value="6">6 個月（6,000 元）</option>
+            <option value="12" selected>12 個月（12,000 元）</option>
+          </select>
+        </div>
+        <div class="alert alert-info py-2 px-3 small">
+          <i class="bi bi-check2-circle me-1"></i>確認後將自動建立繳費記錄，並更新預繳至日期。
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="backToSpotModal()">
+          <i class="bi bi-arrow-left me-1"></i>返回
+        </button>
+        <button class="btn btn-success fw-semibold" onclick="doFuturePay()">
+          <i class="bi bi-check-lg me-1"></i>確認收款
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 長按選單 -->
+<div id="spotCtxBackdrop" onclick="closeSpotMenu()" style="display:none;position:fixed;inset:0;z-index:9998"></div>
+<div id="spotCtxMenu" style="display:none;position:fixed;z-index:9999;background:#fff;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,.22);min-width:190px;overflow:hidden">
+  <ul id="spotCtxList" style="list-style:none;margin:0;padding:6px 0;font-size:1rem"></ul>
+</div>
+
+<!-- 合約照片 Dialog（iframe 載入合約頁，與 Bootstrap JS 完全隔離） -->
+<dialog id="contractDlg" style="border:none;border-radius:14px;padding:0;width:min(520px,96vw);height:82vh;box-shadow:0 8px 32px rgba(0,0,0,.3)">
+  <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #dee2e6;background:#f8f9fa;border-radius:14px 14px 0 0">
+    <strong id="contractDlgTitle" style="font-size:1rem">合約照片</strong>
+    <button type="button" onclick="closeContractDlg()"
+            style="background:none;border:none;font-size:1.6rem;cursor:pointer;line-height:1;padding:0 4px">×</button>
+  </div>
+  <iframe id="contractFrame" src="" style="width:100%;height:calc(82vh - 50px);border:none;display:block"></iframe>
+</dialog>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── 統計卡篩選 ─────────────────────────────────────────────
+const FILTER_LABELS = {
+  all: '全部', rented: '出租中', vacant: '空置',
+  paid: '本月已繳費', unpaid: '本月未繳費', expiring: '即將到期',
+  prepaid: '已預繳', disabled: '停用'
+};
+const FILTER_MATCH = {
+  all:      el => true,
+  rented:   el => ['paid','unpaid','warning'].includes(el.dataset.status),
+  vacant:   el => el.dataset.status === 'vacant',
+  paid:     el => ['paid','warning'].includes(el.dataset.status),
+  unpaid:   el => el.dataset.status === 'unpaid',
+  expiring: el => el.dataset.status === 'warning',
+  prepaid:  el => parseInt(el.dataset.prepaidMonths || 0) > 0,
+  disabled: el => el.dataset.status === 'disabled',
+};
+let _activeFilter = 'all';
+
+// 頁面載入時：預設為「全部」→ 啟用拖拉排序
+document.addEventListener('DOMContentLoaded', () => {
+  _setReorderMode(true);
+  // 空置車位面板：Enter 觸發「開始出租」按鈕
+  const vacantPanel = document.getElementById('panelVacant');
+  if (vacantPanel) {
+    vacantPanel.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'textarea') return;  // textarea 內 Enter 用於換行
+      e.preventDefault();
+      doRent();
+    });
+  }
+});
+
+function filterSpots(card) {
+  const filter = card.dataset.filter;
+  // 再次點擊同一卡片 → 重置為全部
+  if (filter === _activeFilter && filter !== 'all') {
+    filterSpots(document.querySelector('.stat-card.stat-total'));
+    return;
+  }
+  _activeFilter = filter;
+
+  // 統計卡高亮
+  document.querySelectorAll('.stat-filter').forEach(c => c.classList.remove('filter-active'));
+  if (filter !== 'all') card.classList.add('filter-active');
+
+  // 套用篩選
+  const check = FILTER_MATCH[filter] || FILTER_MATCH.all;
+  const allCards = Array.from(document.querySelectorAll('.spot-card'));
+  allCards.forEach(el => {
+    el.style.display = check(el) ? '' : 'none';
+  });
+  // 排序與 placeholder 位置
+  const placeholder = document.querySelector('.spot-placeholder');
+  if (filter === 'all') {
+    // 全部模式：清除 CSS order，使用 DOM 順序（=使用者拖拉的 sort_order）
+    allCards.forEach(el => { el.style.order = ''; });
+    if (placeholder) {
+      placeholder.style.order = '';
+      placeholder.style.display = '';
+    }
+  } else {
+    // 其他模式：依車位編號排列；上 8 下 9 規則：placeholder 永遠位於可見的第 8 個之後
+    const sortedAll = [...allCards].sort((a, b) =>
+      (a.dataset.spotNumber || '').localeCompare(b.dataset.spotNumber || '', undefined, { numeric: true })
+    );
+    const visibleSorted = sortedAll.filter(c => c.style.display !== 'none');
+    visibleSorted.forEach((el, idx) => { el.style.order = (idx + 1) * 10; });
+    sortedAll.filter(c => c.style.display === 'none').forEach(el => { el.style.order = 99999; });
+    if (placeholder) {
+      if (visibleSorted.length > 8) {
+        placeholder.style.order = 85;       // 介於 80（第 8 個）與 90（第 9 個）之間
+        placeholder.style.display = '';
+      } else {
+        placeholder.style.display = 'none'; // 不到 8 張時不需空格
+      }
+    }
+  }
+
+  // 篩選提示列
+  const bar = document.getElementById('filterBar');
+  if (filter === 'all') {
+    bar.classList.add('d-none');
+  } else {
+    document.getElementById('filterLabel').textContent = FILTER_LABELS[filter];
+    bar.classList.remove('d-none');
+  }
+
+  // 「全部」模式才開啟拖拉排序
+  _setReorderMode(filter === 'all');
+}
+
+// ── 拖拉排序 ────────────────────────────────────────────────
+function _setReorderMode(enabled) {
+  const grid = document.getElementById('spotGrid');
+  if (!grid) return;
+  grid.classList.toggle('reorder-mode', enabled);
+  grid.querySelectorAll('.spot-card').forEach(el => {
+    el.setAttribute('draggable', enabled ? 'true' : 'false');
+  });
+}
+
+let _dragSrc = null;
+let _dragOriginalIndex = -1;
+
+function onSpotDragStart(e) {
+  const grid = document.getElementById('spotGrid');
+  if (!grid || !grid.classList.contains('reorder-mode')) { e.preventDefault(); return; }
+  _dragSrc = e.currentTarget;
+  _dragOriginalIndex = Array.from(grid.children).indexOf(_dragSrc);
+  // requestAnimationFrame 避免拖拉的 ghost image 是已套樣式後的版本
+  requestAnimationFrame(() => _dragSrc && _dragSrc.classList.add('dragging'));
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', _dragSrc.dataset.spotId || ''); } catch (_) {}
+}
+
+function onSpotDragEnd(e) {
+  if (_dragSrc) {
+    _dragSrc.classList.remove('dragging');
+    // dragend 一定會觸發；此處統一儲存，避免落點在 placeholder/空白處時 drop 不觸發
+    _saveSpotOrder();
+  }
+  _dragSrc = null;
+  _dragOriginalIndex = -1;
+}
+
+function _saveSpotOrder() {
+  const grid = document.getElementById('spotGrid');
+  if (!grid) return;
+  // 只取真正的 .spot-card（排除隱形 placeholder）
+  const ids = Array.from(grid.querySelectorAll('.spot-card'))
+    .map(el => parseInt(el.dataset.spotId))
+    .filter(n => !isNaN(n));
+  if (!ids.length) return;
+  fetch('/api/spot-reorder', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (!r.ok) alert('儲存排序失敗：' + (r.msg || '未知錯誤'));
+  })
+  .catch(err => alert('儲存排序失敗：' + err.message));
+}
+
+// 即時排序：dragover 時依滑鼠位置即時調整 DOM 順序，讓使用者立刻看到結果
+function onSpotDragOver(e) {
+  if (!_dragSrc) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const tgt = e.currentTarget;
+  if (tgt === _dragSrc) return;
+  const grid = document.getElementById('spotGrid');
+  const rect = tgt.getBoundingClientRect();
+  const insertBefore = (e.clientX - rect.left) < (rect.width / 2);
+  if (insertBefore) {
+    if (tgt.previousElementSibling !== _dragSrc) {
+      grid.insertBefore(_dragSrc, tgt);
+    }
+  } else {
+    if (tgt.nextElementSibling !== _dragSrc) {
+      grid.insertBefore(_dragSrc, tgt.nextSibling);
+    }
+  }
+}
+
+function onSpotDragEnter(e) { /* 即時排序模式下不需 drag-over outline */ }
+function onSpotDragLeave(e) { /* 同上 */ }
+
+function onSpotDrop(e) {
+  // dragend 統一儲存，這裡只阻止瀏覽器預設行為
+  e.preventDefault();
+}
+
+// ── 車位點擊 Modal ──────────────────────────────────────────
+let _currentSpot = {};
+const modal              = new bootstrap.Modal(document.getElementById('spotModal'));
+const transferBsModal    = new bootstrap.Modal(document.getElementById('transferModal'));
+const moveBsModal        = new bootstrap.Modal(document.getElementById('moveModal'));
+const cancelFutureBsModal = new bootstrap.Modal(document.getElementById('cancelFutureModal'));
+const cancelRentalBsModal = new bootstrap.Modal(document.getElementById('cancelRentalModal'));
+const futurePayBsModal    = new bootstrap.Modal(document.getElementById('futurePayModal'));
+
+function backToSpotModal() {
+  transferBsModal.hide();
+  moveBsModal.hide();
+  cancelFutureBsModal.hide();
+  cancelRentalBsModal.hide();
+  futurePayBsModal.hide();
+  // 短暫延遲讓 backdrop 清除後再重開
+  setTimeout(() => modal.show(), 300);
+}
+
+function toggleInlineEndDate(show) {
+  const panel = document.getElementById('inlineEndDatePanel');
+  const mainView = document.getElementById('currentTenantMainView');
+  if (show) {
+    document.getElementById('endDate').value = _currentSpot.expectedEnd || '';
+    document.getElementById('refundAmount').value = 0;
+    document.getElementById('extraChargeAmount').value = 0;
+    ['endRefundDone','endRefundSuggestion','endRefundConflict','endChargeSection','endSettlementSummary'].forEach(id =>
+      document.getElementById(id).classList.add('d-none'));
+    if (_currentSpot.expectedEnd) updateEndRefund();
+    panel.classList.remove('d-none');
+    mainView.classList.add('d-none');
+  } else {
+    panel.classList.add('d-none');
+    mainView.classList.remove('d-none');
+  }
+}
+
+function openTransferModal() {
+  modal.hide();
+  document.getElementById('transferModalSpot').textContent = _currentSpot.spotNumber;
+  let defaultStart;
+  if (_currentSpot.expectedEnd) {
+    const d = new Date(_currentSpot.expectedEnd);
+    d.setDate(d.getDate() + 1);
+    defaultStart = d.toISOString().slice(0, 10);
+  } else {
+    defaultStart = new Date().toISOString().slice(0, 10);
+  }
+  document.getElementById('transferStartDate').value = defaultStart;
+  document.getElementById('transferDurationMonths').value = '12';
+  document.getElementById('transferPrepaidMonths').value = '12';
+  // 預設選取目前車主，並把該選項標紅 + 加上「（原車主）」方便續約
+  const sel = document.getElementById('transferTenantId');
+  const curId = _currentSpot.tenantId ? String(_currentSpot.tenantId) : '';
+  for (const opt of sel.options) {
+    if (!opt.dataset.origLabel) opt.dataset.origLabel = opt.textContent;
+    const isCurrent = opt.value && opt.value === curId;
+    opt.textContent = isCurrent ? `${opt.dataset.origLabel}（原車主）` : opt.dataset.origLabel;
+    // 非原車主明確指定預設色（避免下拉展開時繼承父 <select> 在「收合狀態」設的紅字）
+    opt.style.color = isCurrent ? '#dc3545' : '#212529';
+    opt.style.fontWeight = isCurrent ? 'bold' : 'normal';
+  }
+  sel.value = curId || '';
+  // 同步「收合狀態」的顯示樣式：選中原車主時整個 <select> 也呈紅字粗體；
+  // 同時依是否為原車主切換確認按鈕文字（延長合約 / 確認預約）；
+  // 並鎖定起租日（原車主延長合約時，起租日不應變動）
+  sel.dataset.curTenantId = curId;
+  const _startDateInput = document.getElementById('transferStartDate');
+  const _syncTransferSelectStyle = () => {
+    const isCur = !!curId && sel.value === curId;
+    sel.style.color = isCur ? '#dc3545' : '';
+    sel.style.fontWeight = isCur ? 'bold' : '';
+    // 原車主 → 起租日反灰且不可改；其他車主 → 可調整
+    if (_startDateInput) {
+      _startDateInput.readOnly = isCur;
+      _startDateInput.classList.toggle('bg-light', isCur);
+      _startDateInput.style.cursor = isCur ? 'not-allowed' : '';
+      _startDateInput.title = isCur ? '延長合約：起租日固定為原合約起租日，不可調整' : '';
+    }
+    _updateTransferConfirmLabel();
+  };
+  _syncTransferSelectStyle();
+  sel.onchange = _syncTransferSelectStyle;
+  switchTransferTab('select');
+  updateTransferExpectedEnd();
+  updateTransferRefund();
+  setTimeout(() => transferBsModal.show(), 300);
+}
+
+// 追蹤目前正在移動的租約來源（現任或未來預約）
+let _moveContext = null;  // { rentalId, label, tenantName }
+
+async function openMoveModal() {
+  _moveContext = {
+    rentalId:   _currentSpot.rentalId,
+    label:      `車位 ${_currentSpot.spotNumber} 的租約`,
+    tenantName: _currentSpot.tenantName || '',
+  };
+  await _openMoveModalCommon();
+}
+
+async function openMoveFutureModal() {
+  if (!_currentSpot.futureRentalId) {
+    alert('找不到未來預約資訊');
+    return;
+  }
+  _moveContext = {
+    rentalId:   _currentSpot.futureRentalId,
+    label:      `車位 ${_currentSpot.spotNumber} 的預約`,
+    tenantName: _currentSpot.futureTenantName || '',
+  };
+  await _openMoveModalCommon();
+}
+
+async function _openMoveModalCommon() {
+  modal.hide();
+  document.getElementById('moveModalSpot').textContent = _currentSpot.spotNumber;
+  const sel = document.getElementById('moveTargetSpot');
+  sel.innerHTML = '<option value="">載入中…</option>';
+  const resp = await fetch(`/api/vacant-spots?rental_id=${_moveContext.rentalId}`);
+  const data = await resp.json();
+  sel.innerHTML = '<option value="">— 選擇車位 —</option>';
+  if (data.spots && data.spots.length > 0) {
+    data.spots.forEach(s => {
+      sel.innerHTML += `<option value="${s.id}">車位 ${s.spot_number}</option>`;
+    });
+  } else {
+    sel.innerHTML = '<option value="">無符合日期區間的可用車位</option>';
+  }
+  setTimeout(() => moveBsModal.show(), 300);
+}
+
+function openSpotModal(el) {
+  const d = el.dataset;
+  _currentSpot = {
+    spotId:          d.spotId,
+    spotNumber:      d.spotNumber,
+    spotType:        d.spotType,
+    disabledReason:  d.disabledReason || '',
+    status:          d.status,
+    rentalId:        d.rentalId,
+    tenantId:        d.tenantId,
+    tenantName:      d.tenantName,
+    tenantPhone:     d.tenantPhone,
+    tenantPlate:     d.tenantPlate,
+    startDate:       d.startDate,
+    monthlyFee:      parseInt(d.monthlyFee) || 0,
+    expectedEnd:     d.expectedEnd || '',
+    currentMonth:    d.currentMonth,
+    paymentId:       d.paymentId || '',
+    paymentAmount:   d.paymentAmount !== '' ? parseInt(d.paymentAmount) : '',
+    prepaidUntil:    d.prepaidUntil || '',
+    prepaidMonths:   parseInt(d.prepaidMonths) || 0,
+    prepaidExpiring: d.prepaidExpiring === 'true',
+    pendingRefundId:       d.pendingRefundId || '',
+    pendingRefundAmount:   parseInt(d.pendingRefundAmount) || 0,
+    confirmedRefundAmount:  parseInt(d.confirmedRefundAmount) || 0,
+    confirmedChargeWaiverAmount: parseInt(d.confirmedChargeWaiverAmount) || 0,
+    originalExpectedEnd:    d.originalExpectedEnd || '',
+    nextTenantId:     d.nextTenantId || '',
+    nextTenantName:   d.nextTenantName || '',
+    nextTenantPhone:  d.nextTenantPhone || '',
+    nextTenantPlate:  d.nextTenantPlate || '',
+    nextStartDate:    d.nextStartDate || '',
+    nextExpectedEnd:  d.nextExpectedEnd || '',
+    nextPrepaidMonths: parseInt(d.nextPrepaidMonths) || 1,
+    futureRentalStart: d.futureRentalStart || '',
+    futureRentalId:          d.futureRentalId || '',
+    futureRentalStart:       d.futureRentalStart || '',
+    futureRentalExpectedEnd: d.futureRentalExpectedEnd || '',
+    futureTenantId:          d.futureTenantId || '',
+    futureTenantName:        d.futureTenantName || '',
+    futureTenantPhone:       d.futureTenantPhone || '',
+    futureTenantPlate:       d.futureTenantPlate || '',
+    futureRentalPaidMonths:  parseInt(d.futureRentalPaidMonths) || 0,
+    futureRentalTotalPaid:   parseInt(d.futureRentalTotalPaid) || 0,
+    futureRentalChargeWaiverAmount: parseInt(d.futureRentalChargeWaiverAmount) || 0,
+    futureRentalConfirmedRefundAmount: parseInt(d.futureRentalConfirmedRefundAmount) || 0,
+    futureRentalPrepaidUntil: d.futureRentalPrepaidUntil || '',
+    futureRentalRefundPending: parseInt(d.futureRentalRefundPending) || 0,
+    rentalRefundPending: parseInt(d.rentalRefundPending) || 0,
+    contractCount: parseInt(d.contractCount) || 0,
+    futureContractCount: parseInt(d.futureContractCount) || 0,
+    lastPrepaidAmount: parseInt(d.lastPrepaidAmount) || 1000,
+    extraFutures: JSON.parse(el.dataset.extraFutures || '[]'),
+    rentalStartDate: d.rentalStartDate || '',
+    totalPaidAll: parseInt(d.totalPaidAll) || 0,
+    hasRefundWaiver: !!d.hasRefundWaiver,
+  };
+
+  const header = document.getElementById('spotModalHeader');
+  document.getElementById('spotTitleText').textContent = `車位 ${_currentSpot.spotNumber}`;
+  header.className = 'modal-header';
+
+  // 兩欄版面：有下任車主（含預約換租）→ modal 加寬、右欄顯示；否則單欄
+  const _hasFuture = !!_currentSpot.futureRentalId || !!_currentSpot.nextTenantId;
+  const _dialog = document.getElementById('spotModalDialog');
+  if (_hasFuture) _dialog.classList.add('modal-lg');
+  else _dialog.classList.remove('modal-lg');
+  document.getElementById('spotFutureCol').classList.toggle('d-none', !_hasFuture);
+
+  // 根據狀態顯示不同 panel
+  ['panelDisabled','panelVacant','panelRented'].forEach(id =>
+    document.getElementById(id).classList.add('d-none')
+  );
+  // 重置三個下任車主區塊（避免切換車位時殘留前一個的狀態）
+  ['vacantFutureSection','futureBookingSection','nextTenantSection'].forEach(id =>
+    document.getElementById(id).classList.add('d-none')
+  );
+  document.getElementById('extraFuturesContainer').innerHTML = '';
+  // 重置下任車主待退款橫幅
+  _toggleFutureRefundAlert(0);
+  // 重置下任車主修改預約面板
+  document.getElementById('inlineFutureEditPanel').classList.add('d-none');
+  // 重置現任車主設定退租日面板
+  toggleInlineEndDate(false);
+
+  if (_currentSpot.status === 'disabled') {
+    header.style.background = 'linear-gradient(135deg,#868e96,#495057)';
+    header.classList.add('text-white');
+    document.getElementById('panelDisabled').classList.remove('d-none');
+    const _reasonRow = document.getElementById('disabledReasonRow');
+    if (_currentSpot.disabledReason) {
+      document.getElementById('disabledReasonText').textContent = _currentSpot.disabledReason;
+      _reasonRow.classList.remove('d-none');
+    } else {
+      _reasonRow.classList.add('d-none');
+    }
+  } else if (_currentSpot.status === 'vacant') {
+    header.classList.add('bg-success','text-white');
+    header.style.background = '';
+    document.getElementById('panelVacant').classList.remove('d-none');
+    const _today = new Date().toISOString().slice(0,10);
+    document.getElementById('rentStartDate').value = _today;
+    document.getElementById('rentTenantId').value = '';
+    document.getElementById('rentPrepaidMonths').value = '1';
+    document.getElementById('rentDurationMonths').value = '12';
+    updateExpectedEnd();
+    // 下一位車主（空置車位的已預約）
+    const _vacantFutureSec = document.getElementById('vacantFutureSection');
+    if (_currentSpot.futureRentalId) {
+      document.getElementById('vacantFutureName').textContent  = _currentSpot.futureTenantName  || '—';
+      document.getElementById('vacantFuturePhone').textContent = _currentSpot.futureTenantPhone || '—';
+      document.getElementById('vacantFuturePlate').textContent = _currentSpot.futureTenantPlate || '—';
+      document.getElementById('vacantFutureStart').textContent = _currentSpot.futureRentalStart || '—';
+      document.getElementById('vacantFutureEnd').textContent   = _currentSpot.futureRentalExpectedEnd || '（未設定）';
+      const _fm = _currentSpot.futureRentalPaidMonths;
+      const _fu = _currentSpot.futureRentalPrepaidUntil;
+      const _frp = _currentSpot.futureRentalRefundPending;
+      const _fend = _currentSpot.futureRentalExpectedEnd;
+      const _fstart = _currentSpot.futureRentalStart;
+      const _fwaiver = _currentSpot.futureRentalChargeWaiverAmount || 0;
+      const _fconfRefund = _currentSpot.futureRentalConfirmedRefundAmount || 0;
+      const _fGross = _currentSpot.futureRentalTotalPaid || 0;
+      const _fNet   = _fGross - _fconfRefund + _fwaiver;
+      // 全期應繳與剩餘補繳（基於淨繳）
+      let _fullExpected = 0, _vacantRemaining = 0;
+      if (_fstart && _fend) {
+        _fullExpected = calcFullPeriod(_fstart, _fend).total;
+        _vacantRemaining = Math.max(0, _fullExpected - _fNet);
+      }
+      if (_fm > 0) {
+        let _payHtml = `<span class="text-success fw-semibold"><i class="bi bi-check-circle-fill me-1"></i>已預繳 ${_fNet.toLocaleString()} 元（${_fm} 個月）</span>`;
+        if (_fu) _payHtml += `<br><span class="text-info" style="font-size:.8rem;">預繳至 ${_fu}</span>`;
+        if (_fwaiver > 0) {
+          _payHtml += `<br><span class="badge bg-info text-dark fw-normal">已豁免補繳 ${_fwaiver.toLocaleString()} 元</span>` +
+            ` <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-danger" style="font-size:.75rem;text-decoration:underline;"`
+            + ` onclick="cancelChargeWaiver(${parseInt(_currentSpot.futureRentalId) || 0})">取消豁免</button>`;
+        }
+        if (_fconfRefund > 0) {
+          _payHtml += `<br><span class="badge bg-success fw-normal">已退款 ${_fconfRefund.toLocaleString()} 元</span>`;
+        }
+        if (_frp > 0) {
+          _payHtml += `<br><span class="badge bg-warning text-dark fw-normal"><i class="bi bi-arrow-return-left me-1"></i>待退款 ${_frp.toLocaleString()} 元</span>`;
+        } else if (_frp < 0) {
+          _payHtml += `<br><span class="text-warning fw-semibold"><i class="bi bi-exclamation-circle-fill me-1"></i>待補繳 ${(-_frp).toLocaleString()} 元</span>`;
+        } else if (_vacantRemaining > 0) {
+          _payHtml += `<br><span class="text-warning fw-semibold" style="font-size:.85rem;"><i class="bi bi-exclamation-circle-fill me-1"></i>尚需補繳 ${_vacantRemaining.toLocaleString()} 元</span>`;
+        }
+        document.getElementById('vacantFuturePay').innerHTML = _payHtml;
+      } else if (_frp < 0) {
+        document.getElementById('vacantFuturePay').innerHTML =
+          `<span class="text-warning fw-semibold"><i class="bi bi-exclamation-circle-fill me-1"></i>待補繳 ${(-_frp).toLocaleString()} 元（尚未繳費）</span>`;
+      } else {
+        let _noPayHtml = '<span class="text-muted">尚未繳費</span>';
+        if (_fstart && _fend) {
+          const { months: _em, total: _et } = calcFullPeriod(_fstart, _fend);
+          _noPayHtml += `<br><span class="text-muted small">預計收款 <strong>${_et.toLocaleString()} 元</strong>（${_em} 個月）</span>`;
+        }
+        document.getElementById('vacantFuturePay').innerHTML = _noPayHtml;
+      }
+      // 待退款橫幅（與現任車主同格式，置於 spotFutureCol 頂部）
+      _toggleFutureRefundAlert(_frp);
+      document.getElementById('vacantFutureChargeGroup').classList.toggle('d-none', _frp >= 0);
+      document.getElementById('vacantFutureConfirmCharge').classList.toggle('d-none', _frp >= 0);
+      if (_frp < 0) document.getElementById('vacantFutureChargeAmt').textContent = (-_frp).toLocaleString();
+      // 已繳清（基於總額）且無待確認項目 → 收款按鈕消失
+      const _vacantFullyPaid = _vacantRemaining === 0;
+      document.getElementById('vacantFuturePayBtn').classList.toggle('d-none', !!_vacantFullyPaid || _frp !== 0);
+      // 結算面板（與現任版面對齊；淨繳 = 毛繳 − 已確認退費 + 補繳豁免）
+      const _vfSet = document.getElementById('vacantFutureSettlement');
+      if (_fstart && _fend) {
+        const _vfBal = _fNet - _fullExpected;
+        document.getElementById('vacantFutureSettleExp').textContent = _fullExpected.toLocaleString() + ' 元';
+        const _adjParts = [];
+        if (_fconfRefund > 0) _adjParts.push(`− 退 ${_fconfRefund.toLocaleString()}`);
+        if (_fwaiver > 0)     _adjParts.push(`+ 豁免 ${_fwaiver.toLocaleString()}`);
+        const _vfPaidLabel = _adjParts.length
+          ? `${_fNet.toLocaleString()} 元（${_fGross.toLocaleString()} ${_adjParts.join(' ')}）`
+          : `${_fGross.toLocaleString()} 元`;
+        document.getElementById('vacantFutureSettlePaid').textContent = _vfPaidLabel;
+        const _vfBalEl = document.getElementById('vacantFutureSettleBal');
+        if (_vfBal > 0) {
+          _vfBalEl.textContent = `+ ${_vfBal.toLocaleString()} 元（可退費）`;
+          _vfBalEl.className = 'fw-bold text-success';
+        } else if (_vfBal < 0) {
+          _vfBalEl.textContent = `- ${(-_vfBal).toLocaleString()} 元（待補繳）`;
+          _vfBalEl.className = 'fw-bold text-danger';
+        } else {
+          _vfBalEl.textContent = '已繳清';
+          _vfBalEl.className = 'fw-bold text-muted';
+        }
+        _vfSet.classList.remove('d-none');
+      } else {
+        _vfSet.classList.add('d-none');
+      }
+      const _vfCntBadge = document.getElementById('vacantFutureContractBadge');
+      if (_vfCntBadge) { const c = _currentSpot.futureContractCount; _vfCntBadge.textContent = c; _vfCntBadge.classList.toggle('d-none', c <= 0); }
+      _vacantFutureSec.classList.remove('d-none');
+    } else {
+      _vacantFutureSec.classList.add('d-none');
+    }
+    // 未來預約提示（出租表單上方）
+    const _futureAlert = document.getElementById('futureRentalAlert');
+    if (_currentSpot.futureRentalStart) {
+      document.getElementById('futureRentalStartLabel').textContent = _currentSpot.futureRentalStart;
+      _futureAlert.classList.remove('d-none');
+    } else {
+      _futureAlert.classList.add('d-none');
+    }
+    // 重設 tab 為「選擇現有車主」
+    switchTenantTab('select');
+    document.getElementById('btnSetDisabled').classList.remove('d-none');
+  } else {
+    header.style.background = '';
+    const statusColors = { paid:'bg-primary', unpaid:'bg-danger', warning:'bg-warning' };
+    header.classList.add(statusColors[_currentSpot.status] || 'bg-primary', 'text-white');
+    document.getElementById('panelRented').classList.remove('d-none');
+    { const _ccb = document.getElementById('currentContractBadge'); const _cc = _currentSpot.contractCount; _ccb.textContent = _cc; _ccb.classList.toggle('d-none', _cc <= 0); }
+    // 待確認退款
+    const _refundAlert = document.getElementById('pendingRefundAlert');
+    if (_currentSpot.pendingRefundId) {
+      document.getElementById('pendingRefundAmountLabel').textContent =
+        _currentSpot.pendingRefundAmount.toLocaleString();
+      _refundAlert.classList.remove('d-none');
+    } else {
+      _refundAlert.classList.add('d-none');
+    }
+
+    // 預繳到期警示
+    const _expiringAlert = document.getElementById('prepaidExpiringAlert');
+    if (_currentSpot.prepaidExpiring) {
+      document.getElementById('prepaidExpiringDate').textContent = _currentSpot.prepaidUntil;
+      _expiringAlert.classList.remove('d-none');
+    } else {
+      _expiringAlert.classList.add('d-none');
+    }
+    document.getElementById('infoName').textContent  = _currentSpot.tenantName  || '—';
+    document.getElementById('infoPhone').textContent = _currentSpot.tenantPhone || '—';
+    document.getElementById('infoPlate').textContent = _currentSpot.tenantPlate || '—';
+    document.getElementById('infoStart').textContent = _currentSpot.startDate   || '—';
+    document.getElementById('infoFee').textContent   = _currentSpot.monthlyFee + ' 元';
+    document.getElementById('infoExpectedEnd').textContent = _currentSpot.expectedEnd || '（未設定）';
+    // 租期結算
+    {
+      const _settleEl = document.getElementById('settlementSection');
+      const _fee = _currentSpot.monthlyFee || 1000;
+      if (_currentSpot.startDate && _currentSpot.expectedEnd) {
+        const { total: _totalExp } = calcFullPeriod(_currentSpot.startDate, _currentSpot.expectedEnd, _fee);
+        const _totalPaid = _currentSpot.totalPaidAll || 0;
+        const _confirmedRefund = _currentSpot.confirmedRefundAmount || 0;
+        const _chargeWaiver = _currentSpot.confirmedChargeWaiverAmount || 0;
+        const _netPaid = _totalPaid - _confirmedRefund + _chargeWaiver;
+        const _balance = _netPaid - _totalExp;
+        document.getElementById('settleTotalExpected').textContent = _totalExp.toLocaleString() + ' 元';
+        const _parts = [];
+        _parts.push(`${_totalPaid.toLocaleString()}`);
+        if (_confirmedRefund > 0) _parts.push(`− 退 ${_confirmedRefund.toLocaleString()}`);
+        if (_chargeWaiver > 0)    _parts.push(`+ 豁免 ${_chargeWaiver.toLocaleString()}`);
+        const _paidLabel = (_confirmedRefund > 0 || _chargeWaiver > 0)
+          ? `${_netPaid.toLocaleString()} 元（${_parts.join(' ')}）`
+          : `${_totalPaid.toLocaleString()} 元`;
+        document.getElementById('settleTotalPaid').textContent     = _paidLabel;
+        const _balEl = document.getElementById('settleBalance');
+        if (_balance > 0) {
+          _balEl.textContent  = `+ ${_balance.toLocaleString()} 元（可退費）`;
+          _balEl.className = 'fw-bold text-success';
+        } else if (_balance < 0) {
+          _balEl.textContent  = `- ${(-_balance).toLocaleString()} 元（待補繳）`;
+          _balEl.className = 'fw-bold text-danger';
+        } else {
+          _balEl.textContent  = '已繳清';
+          _balEl.className = 'fw-bold text-muted';
+        }
+        _settleEl.classList.remove('d-none');
+      } else {
+        _settleEl.classList.add('d-none');
+      }
+    }
+    // 繳費狀況：整合進資訊表，與下任車主版面一致
+    const _statusRow = document.getElementById('rowPaymentStatus');
+    const _statusCell = document.getElementById('infoPaymentStatus');
+    {
+      const _totalPaid = _currentSpot.totalPaidAll || 0;
+      const _confirmedRefund = _currentSpot.confirmedRefundAmount || 0;
+      const _chargeWaiver = _currentSpot.confirmedChargeWaiverAmount || 0;
+      const _netPaidAll = _totalPaid - _confirmedRefund + _chargeWaiver;
+      const _fee = _currentSpot.monthlyFee || 1000;
+      const _monthsPaid = Math.floor(_netPaidAll / _fee);
+      let _statusHtml = '';
+      if (_netPaidAll > 0) {
+        _statusHtml = `<span class="text-success fw-semibold"><i class="bi bi-check-circle-fill me-1"></i>已預繳 ${_netPaidAll.toLocaleString()} 元（${_monthsPaid} 個月）</span>`;
+        if (_currentSpot.prepaidUntil) {
+          _statusHtml += `<br><span class="text-info" style="font-size:.8rem;">預繳至 ${_currentSpot.prepaidUntil}</span>`;
+        }
+      } else {
+        _statusHtml = '<span class="text-muted">尚未繳費</span>';
+      }
+      // 退款 / 補繳豁免 狀態
+      if (_confirmedRefund > 0) {
+        _statusHtml += `<br><span class="badge bg-success fw-normal">已退款 ${_confirmedRefund.toLocaleString()} 元</span>`;
+      } else if ((_currentSpot.pendingRefundAmount || 0) > 0) {
+        _statusHtml += `<br><span class="badge bg-warning text-dark fw-normal">待退款 ${_currentSpot.pendingRefundAmount.toLocaleString()} 元</span>`;
+      } else {
+        const _suggestRefund = _calcRefund(_currentSpot.expectedEnd);
+        if (_suggestRefund > 0) {
+          _statusHtml += `<br><span class="badge bg-warning text-dark fw-normal">建議退款 ${_suggestRefund.toLocaleString()} 元</span>`;
+        }
+      }
+      if (_chargeWaiver > 0) {
+        _statusHtml += `<br><span class="badge bg-info text-dark fw-normal">已豁免補繳 ${_chargeWaiver.toLocaleString()} 元</span>` +
+          ` <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-danger" style="font-size:.75rem;text-decoration:underline;"`
+          + ` onclick="cancelChargeWaiver(${parseInt(_currentSpot.rentalId) || 0})">取消豁免</button>`;
+      }
+      _statusCell.innerHTML = _statusHtml;
+      _statusRow.classList.remove('d-none');
+    }
+    const _startDay = _currentSpot.startDate ? parseInt(_currentSpot.startDate.split('-')[2]) : 1;
+    document.getElementById('infoMonth').textContent = monthRange(_currentSpot.currentMonth, _startDay);
+    // 日曆月計費：每個月份固定收月租金，不按天數比例
+    document.getElementById('payAmount').value = _currentSpot.monthlyFee || 1000;
+    toggleRentalEdit(false);
+
+    const isPaid    = _currentSpot.paymentId !== '';
+    const isPrepaid = isPaid && _currentSpot.prepaidMonths > 0;
+
+    // 待補繳橫幅（quick_end 設定未來退租日時暫存）
+    const _rrp = _currentSpot.rentalRefundPending;
+    const _chargeBanner = document.getElementById('rentalChargeBanner');
+    if (_rrp < 0) {
+      document.getElementById('rentalChargeAmt').textContent = (-_rrp).toLocaleString();
+      _chargeBanner.classList.remove('d-none');
+      document.getElementById('partialChargeForm').classList.add('d-none');
+    } else {
+      _chargeBanner.classList.add('d-none');
+    }
+
+    // 待補繳橫幅顯示時，隱藏下方預繳方案 / 追加預繳區塊（避免兩種收款入口並存）
+    const _chargeBannerShown = (_rrp < 0);
+    if (_chargeBannerShown) {
+      document.getElementById('payPrepaidSimple').classList.add('d-none');
+      document.getElementById('payDetailSection').classList.add('d-none');
+    } else if (isPrepaid) {
+      document.getElementById('payPrepaidSimple').classList.remove('d-none');
+      document.getElementById('payDetailSection').classList.add('d-none');
+      document.getElementById('prepaidAddView').classList.add('d-none');
+      document.getElementById('prepaidSimpleRow').classList.remove('d-none');
+      // 已繳至超出預計結束日 → 自動建立待退款記錄（底部按鈕不再顯示）
+      const _netRefund = _calcRefund(_currentSpot.expectedEnd);  // 已是淨額
+      const _hasPendingRefund = (_currentSpot.pendingRefundAmount || 0) > 0;
+      document.getElementById('prepaidRefundBtn').classList.add('d-none');
+      // 「追加預繳」：有結束日 → 一律隱藏（gap=0 不需；gap>0 應該用補繳款 banner）
+      // 只在無結束日（無限期租約）時允許追加預繳
+      const _hideAddBtn = !!_currentSpot.expectedEnd;
+      document.getElementById('prepaidAddBtn').classList.toggle('d-none', _hideAddBtn);
+      if (_netRefund > 0 && !_hasPendingRefund && !_currentSpot.hasRefundWaiver) {
+        fetch('/api/create-pending-refund', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rental_id: parseInt(_currentSpot.rentalId), amount: _netRefund })
+        }).then(r => r.json()).then(data => { if (data.ok) location.reload(); });
+      }
+    } else {
+      document.getElementById('payPrepaidSimple').classList.add('d-none');
+      document.getElementById('payDetailSection').classList.remove('d-none');
+      document.getElementById('alreadyPaid').classList.toggle('d-none', !isPaid);
+      document.getElementById('notYetPaid').classList.toggle('d-none', isPaid);
+      if (isPaid) {
+        document.getElementById('paidAmount').textContent = _currentSpot.paymentAmount;
+        togglePayEdit(false);
+      } else {
+        // 未繳費 → 預設顯示預繳方案（多數情境為年繳）
+        toggleFirstPrepaid(true);
+      }
+    }
+    // 預約的下一位車主（獨立未來租約）
+    const _futureSec = document.getElementById('futureBookingSection');
+    if (_currentSpot.futureRentalId) {
+      document.getElementById('futureBookingName').textContent  = _currentSpot.futureTenantName  || '—';
+      document.getElementById('futureBookingPhone').textContent = _currentSpot.futureTenantPhone || '—';
+      document.getElementById('futureBookingPlate').textContent = _currentSpot.futureTenantPlate || '—';
+      document.getElementById('futureBookingStart').textContent = _currentSpot.futureRentalStart || '—';
+      document.getElementById('futureBookingEnd').textContent   = _currentSpot.futureRentalExpectedEnd || '（未設定）';
+      const _fm = _currentSpot.futureRentalPaidMonths;
+      const _fu = _currentSpot.futureRentalPrepaidUntil;
+      const _frp = _currentSpot.futureRentalRefundPending;
+      const _fend = _currentSpot.futureRentalExpectedEnd;
+      const _fstart = _currentSpot.futureRentalStart;
+      const _fwaiver = _currentSpot.futureRentalChargeWaiverAmount || 0;
+      const _fconfRefund = _currentSpot.futureRentalConfirmedRefundAmount || 0;
+      const _fGross = _currentSpot.futureRentalTotalPaid || 0;
+      const _fNet   = _fGross - _fconfRefund + _fwaiver;
+      // 全期應繳與剩餘補繳（基於淨繳）
+      let _fullExpected = 0, _bookingRemaining = 0;
+      if (_fstart && _fend) {
+        _fullExpected = calcFullPeriod(_fstart, _fend).total;
+        _bookingRemaining = Math.max(0, _fullExpected - _fNet);
+      }
+      if (_fm > 0) {
+        let _payHtml = `<span class="text-success fw-semibold"><i class="bi bi-check-circle-fill me-1"></i>已預繳 ${_fNet.toLocaleString()} 元（${_fm} 個月）</span>`;
+        if (_fu) _payHtml += `<br><span class="text-info" style="font-size:.8rem;">預繳至 ${_fu}</span>`;
+        if (_fwaiver > 0) {
+          _payHtml += `<br><span class="badge bg-info text-dark fw-normal">已豁免補繳 ${_fwaiver.toLocaleString()} 元</span>` +
+            ` <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-danger" style="font-size:.75rem;text-decoration:underline;"`
+            + ` onclick="cancelChargeWaiver(${parseInt(_currentSpot.futureRentalId) || 0})">取消豁免</button>`;
+        }
+        if (_fconfRefund > 0) {
+          _payHtml += `<br><span class="badge bg-success fw-normal">已退款 ${_fconfRefund.toLocaleString()} 元</span>`;
+        }
+        if (_frp > 0) {
+          _payHtml += `<br><span class="badge bg-warning text-dark fw-normal"><i class="bi bi-arrow-return-left me-1"></i>待退款 ${_frp.toLocaleString()} 元</span>`;
+        } else if (_frp < 0) {
+          _payHtml += `<br><span class="text-warning fw-semibold"><i class="bi bi-exclamation-circle-fill me-1"></i>待補繳 ${(-_frp).toLocaleString()} 元</span>`;
+        } else if (_bookingRemaining > 0) {
+          _payHtml += `<br><span class="text-warning fw-semibold" style="font-size:.85rem;"><i class="bi bi-exclamation-circle-fill me-1"></i>尚需補繳 ${_bookingRemaining.toLocaleString()} 元</span>`;
+        }
+        document.getElementById('futureBookingPay').innerHTML = _payHtml;
+      } else if (_frp < 0) {
+        document.getElementById('futureBookingPay').innerHTML =
+          `<span class="text-warning fw-semibold"><i class="bi bi-exclamation-circle-fill me-1"></i>待補繳 ${(-_frp).toLocaleString()} 元（尚未繳費）</span>`;
+      } else {
+        let _noPayHtml = '<span class="text-muted">尚未繳費</span>';
+        if (_fstart && _fend) {
+          const { months: _em, total: _et } = calcFullPeriod(_fstart, _fend);
+          _noPayHtml += `<br><span class="text-muted small">預計收款 <strong>${_et.toLocaleString()} 元</strong>（${_em} 個月）</span>`;
+        }
+        document.getElementById('futureBookingPay').innerHTML = _noPayHtml;
+      }
+      // 待退款橫幅（與現任車主同格式，置於 spotFutureCol 頂部）
+      _toggleFutureRefundAlert(_frp);
+      document.getElementById('futureBookingChargeGroup').classList.toggle('d-none', _frp >= 0);
+      document.getElementById('futureBookingConfirmCharge').classList.toggle('d-none', _frp >= 0);
+      if (_frp < 0) document.getElementById('futureBookingChargeAmt').textContent = (-_frp).toLocaleString();
+      // 已繳清（基於總額）且無待確認項目 → 收款按鈕消失
+      const _bookingFullyPaid = _bookingRemaining === 0;
+      document.getElementById('futureBookingPayBtn').classList.toggle('d-none', !!_bookingFullyPaid || _frp !== 0);
+      // 結算面板（與現任版面對齊；淨繳 = 毛繳 − 已確認退費 + 補繳豁免）
+      const _fbSet = document.getElementById('futureBookingSettlement');
+      if (_fstart && _fend) {
+        const _fbBal = _fNet - _fullExpected;
+        document.getElementById('futureBookingSettleExp').textContent = _fullExpected.toLocaleString() + ' 元';
+        const _adjParts = [];
+        if (_fconfRefund > 0) _adjParts.push(`− 退 ${_fconfRefund.toLocaleString()}`);
+        if (_fwaiver > 0)     _adjParts.push(`+ 豁免 ${_fwaiver.toLocaleString()}`);
+        const _fbPaidLabel = _adjParts.length
+          ? `${_fNet.toLocaleString()} 元（${_fGross.toLocaleString()} ${_adjParts.join(' ')}）`
+          : `${_fGross.toLocaleString()} 元`;
+        document.getElementById('futureBookingSettlePaid').textContent = _fbPaidLabel;
+        const _fbBalEl = document.getElementById('futureBookingSettleBal');
+        if (_fbBal > 0) {
+          _fbBalEl.textContent = `+ ${_fbBal.toLocaleString()} 元（可退費）`;
+          _fbBalEl.className = 'fw-bold text-success';
+        } else if (_fbBal < 0) {
+          _fbBalEl.textContent = `- ${(-_fbBal).toLocaleString()} 元（待補繳）`;
+          _fbBalEl.className = 'fw-bold text-danger';
+        } else {
+          _fbBalEl.textContent = '已繳清';
+          _fbBalEl.className = 'fw-bold text-muted';
+        }
+        _fbSet.classList.remove('d-none');
+      } else {
+        _fbSet.classList.add('d-none');
+      }
+      const _fbCntBadge = document.getElementById('futureContractBadge');
+      if (_fbCntBadge) { const c = _currentSpot.futureContractCount; _fbCntBadge.textContent = c; _fbCntBadge.classList.toggle('d-none', c <= 0); }
+      _futureSec.classList.remove('d-none');
+    } else {
+      _futureSec.classList.add('d-none');
+    }
+    // 後續預約（第二筆以後）
+    const _extraCont = document.getElementById('extraFuturesContainer');
+    _extraCont.innerHTML = '';
+    (_currentSpot.extraFutures || []).forEach((ef, idx) => {
+      const _label = idx === 0 ? '下下位車主' : `第 ${idx + 2} 位預約車主`;
+      let _payHtml = ef.paid_months > 0
+        ? `<span class="text-success fw-semibold">已預繳 ${ef.total_paid.toLocaleString()} 元（${ef.paid_months} 個月）</span>`
+        : '<span class="text-muted">尚未繳費</span>';
+      if (ef.refund_pending < 0)
+        _payHtml += `<br><span class="text-warning fw-semibold">待補繳 ${(-ef.refund_pending).toLocaleString()} 元</span>`;
+      else if (ef.refund_pending > 0)
+        _payHtml += `<br><span class="text-danger fw-semibold">待退款 ${ef.refund_pending.toLocaleString()} 元</span>`;
+      _extraCont.insertAdjacentHTML('beforeend', `
+        <div class="mt-2 border border-secondary rounded p-2" style="border-style:dashed!important">
+          <p class="fw-semibold small text-secondary mb-1">
+            <i class="bi bi-calendar2-event me-1"></i>${_label}（已預約）
+          </p>
+          <table class="table table-borderless table-sm mb-2">
+            <tr><th style="width:90px">車主</th><td>${ef.tenant_name || '—'}</td></tr>
+            <tr><th>電話/Line ID</th><td>${ef.tenant_phone || '—'}</td></tr>
+            <tr><th>車牌</th><td>${ef.tenant_plate ? `<span class="badge bg-dark">${ef.tenant_plate}</span>` : '—'}</td></tr>
+            <tr><th>起租日</th><td>${ef.start}</td></tr>
+            <tr><th>預計結束</th><td>${ef.expected_end || '（未設定）'}</td></tr>
+            <tr><th>繳費狀況</th><td>${_payHtml}</td></tr>
+          </table>
+          <button class="btn btn-sm btn-outline-danger w-100"
+                  onclick="cancelExtraFuture(${ef.id}, '${ef.tenant_name}')">
+            <i class="bi bi-x-circle me-1"></i>取消此預約
+          </button>
+        </div>`);
+    });
+    // 下一位車主資訊（預約換租）
+    const _nextSec = document.getElementById('nextTenantSection');
+    if (_currentSpot.nextTenantId) {
+      document.getElementById('nextInfoName').textContent    = _currentSpot.nextTenantName  || '—';
+      document.getElementById('nextInfoPhone').textContent   = _currentSpot.nextTenantPhone || '—';
+      document.getElementById('nextInfoPlate').textContent   = _currentSpot.nextTenantPlate || '—';
+      document.getElementById('nextInfoStart').textContent   = _currentSpot.nextStartDate   || '—';
+      document.getElementById('nextInfoEnd').textContent     = _currentSpot.nextExpectedEnd || '（未設定）';
+      // 重置編輯/補繳/轉移面板狀態
+      toggleNextTenantEdit(false);
+      document.getElementById('nextTransferSection').classList.add('d-none');
+      document.getElementById('nextPartialChargeForm').classList.add('d-none');
+      document.getElementById('nextPayDone').classList.add('d-none');
+      // 計算待補繳金額（同時填繳費狀況格）
+      const _ns = _currentSpot.nextStartDate;
+      const _ne = _currentSpot.nextExpectedEnd;
+      const _nm = _currentSpot.nextPrepaidMonths;
+      const _payCell = document.getElementById('nextInfoPay');
+      let _ntExpected = 0;
+      let _ntMonthsPlan = 0;
+      if (_ns && _ne) {
+        const { months: _cem, total: _cet } = calcFullPeriod(_ns, _ne);
+        _ntExpected = _cet; _ntMonthsPlan = _cem;
+        _payCell.innerHTML =
+          `<span class="text-muted">尚未繳費</span>` +
+          `<br><span class="text-info" style="font-size:.8rem;">預計收款 <strong>${_cet.toLocaleString()} 元</strong>（${_cem} 個月）</span>`;
+      } else if (_ns) {
+        const _total = _nm * 1000;
+        _ntExpected = _total; _ntMonthsPlan = _nm;
+        _payCell.innerHTML =
+          `<span class="text-muted">尚未繳費</span>` +
+          `<br><span class="text-info" style="font-size:.8rem;">預計收款 <strong>${_total.toLocaleString()} 元</strong>（${_nm} 個月）</span>`;
+      } else {
+        _payCell.innerHTML = `<span class="text-muted">（請先設定起租日後再收款）</span>`;
+      }
+      // 結算面板（與現任版面對齊；預約換租尚未繳費，已繳=0）
+      const _ntSet = document.getElementById('nextTenantSettlement');
+      if (_ntExpected > 0) {
+        document.getElementById('nextTenantSettleExp').textContent  = _ntExpected.toLocaleString() + ' 元';
+        document.getElementById('nextTenantSettlePaid').textContent = '0 元';
+        const _ntBalEl = document.getElementById('nextTenantSettleBal');
+        _ntBalEl.textContent = `- ${_ntExpected.toLocaleString()} 元（待補繳）`;
+        _ntBalEl.className = 'fw-bold text-danger';
+        _ntSet.classList.remove('d-none');
+      } else {
+        _ntSet.classList.add('d-none');
+      }
+      // 待補繳款 banner
+      const _ntBanner = document.getElementById('nextChargeBanner');
+      if (_ntExpected > 0 && _ntMonthsPlan > 0) {
+        document.getElementById('nextChargeAmt').textContent = _ntExpected.toLocaleString();
+        _ntBanner.dataset.months = _ntMonthsPlan;
+        _ntBanner.dataset.total  = _ntExpected;
+        _ntBanner.classList.remove('d-none');
+      } else {
+        _ntBanner.classList.add('d-none');
+      }
+      _nextSec.classList.remove('d-none');
+    } else {
+      _nextSec.classList.add('d-none');
+    }
+
+    document.getElementById('btnSetDisabled').classList.add('d-none');
+    // 已有下一位車主（獨立預約或換租預約）時隱藏「設定下一位車主」按鈕
+    const _hasNext = _currentSpot.futureRentalId || _currentSpot.nextTenantId;
+    document.getElementById('btnSetNextTenant').classList.toggle('d-none', !!_hasNext);
+  }
+
+  if (_currentSpot.status !== 'vacant') {
+    document.getElementById('btnSetDisabled').classList.add('d-none');
+  }
+
+  modal.show();
+}
+
+// 日曆月顯示：YYYY-MM → "YYYY-MM-01 至 YYYY-MM-月底"
+// startDay 參數保留以兼容呼叫端，但不再使用
+function monthRange(ym, startDay) {
+  const [y, m] = ym.split('-').map(Number);
+  const pad = n => String(n).padStart(2, '0');
+  const last = new Date(y, m, 0).getDate();   // m 為 1-indexed，day=0 → 上個月最後一天 → 該月底
+  return `${y}-${pad(m)}-01 至 ${y}-${pad(m)}-${pad(last)}`;
+}
+
+// 找出嚴格早於 futureStartStr 的最晚計費週期結束日（依 startDay 計算）
+function _cycleEndBefore(futureStartStr, startDay) {
+  const futureStart = new Date(futureStartStr);
+  const ldom = (y, m) => new Date(y, m, 0).getDate();
+  let y = futureStart.getFullYear();
+  let m = futureStart.getMonth() + 1;
+  for (let iter = 0; iter < 24; iter++) {
+    const ny = m === 12 ? y + 1 : y;
+    const nm = m === 12 ? 1 : m + 1;
+    const ce = new Date(ny, nm - 1, Math.min(startDay, ldom(ny, nm)) - 1);
+    if (ce < futureStart) return ce.toISOString().slice(0, 10);
+    m--; if (m === 0) { m = 12; y--; }
+  }
+  return null;
+}
+
+function _localDateStr(dateObj) {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function updateExpectedEnd() {
+  const startDateStr = document.getElementById('rentStartDate').value;
+  if (!startDateStr) return;
+  const durSel  = document.getElementById('rentDurationMonths');
+  const selVal  = durSel.value;
+
+  if (selVal === 'custom') {
+    // 已在自定義模式，只更新預付選項
+    updatePrepaidOptions();
+    return;
+  }
+
+  const months = parseInt(selVal) || 12;
+  const [sy, sm, sd] = startDateStr.split('-').map(Number);
+  // 結束日 = 第 N 個日曆月的最後一天
+  // 例：5月起租 12個月 → 第12月為4月 → 結束日為4月30日
+  const startMonthAbs = sy * 12 + sm;
+  const endMonthAbs   = startMonthAbs + months - 1;
+  const endYear  = Math.floor((endMonthAbs - 1) / 12);
+  const endMonth1 = endMonthAbs - endYear * 12;   // 1-indexed
+  const endD = new Date(endYear, endMonth1, 0);   // day=0 → 上個月最後一天
+  let endStr = _localDateStr(endD);
+  let wasCapped = false;
+
+  if (_currentSpot.futureRentalStart) {
+    // 上限：下一位車主起租月的上一個月月底（確保不跨月）
+    const [fy, fm, fd] = _currentSpot.futureRentalStart.split('-').map(Number);
+    const capD = new Date(fy, fm - 1, 0);   // day=0 → 上個月最後一天
+    const capStr = _localDateStr(capD);
+    document.getElementById('rentExpectedEnd').max = capStr;
+    // 更新 alert 中的上限日期說明
+    const capLabel = document.getElementById('futureRentalCapLabel');
+    if (capLabel) capLabel.textContent = capStr;
+    if (endStr > capStr) {
+      endStr = capStr;
+      wasCapped = true;
+    }
+  } else {
+    document.getElementById('rentExpectedEnd').removeAttribute('max');
+  }
+
+  document.getElementById('rentExpectedEnd').value = endStr;
+
+  // 自定義選項：截斷時動態加入並選中
+  let optCustom = document.getElementById('optCustomDuration');
+  const _capDetail = document.getElementById('futureRentalCappedDetail');
+  if (wasCapped) {
+    if (!optCustom) {
+      optCustom = document.createElement('option');
+      optCustom.id = 'optCustomDuration';
+      optCustom.value = 'custom';
+      durSel.appendChild(optCustom);
+    }
+    const { months: pm, total } = calcFullPeriod(startDateStr, endStr);
+    optCustom.textContent = `自定義（${pm} 個月，共 ${total.toLocaleString()} 元）`;
+    durSel.value = 'custom';
+    // 把調整後的詳細資訊塞進上方 futureRentalAlert
+    if (_capDetail) {
+      document.getElementById('futureRentalEndLabel').textContent    = endStr;
+      document.getElementById('futureRentalMonthsLabel').textContent = pm;
+      document.getElementById('futureRentalTotalLabel').textContent  = total.toLocaleString();
+      _capDetail.classList.remove('d-none');
+    }
+  } else {
+    if (optCustom) optCustom.remove();
+    if (_capDetail) _capDetail.classList.add('d-none');
+  }
+
+  updatePrepaidOptions();
+}
+
+function calcFullPeriod(startStr, endStr, fee) {
+  // 按日曆月份計費：起租月到結束月（含）各收一個月費用
+  fee = fee || 1000;
+  const s = new Date(startStr + 'T00:00:00');
+  const e = new Date(endStr + 'T00:00:00');
+  const sy = s.getFullYear(), sm = s.getMonth() + 1;
+  const ey = e.getFullYear(), em = e.getMonth() + 1;
+  const months = Math.max(0, (ey * 12 + em) - (sy * 12 + sm) + 1);
+  return { months, lastAmount: fee, total: months * fee };
+}
+
+function updatePrepaidOptions() {
+  const startStr = document.getElementById('rentStartDate').value;
+  const endStr   = document.getElementById('rentExpectedEnd').value;
+  const sel      = document.getElementById('rentPrepaidMonths');
+  const old = sel.querySelector('option[data-full]');
+  if (old) old.remove();
+  if (!startStr || !endStr) return;
+  const { months, total } = calcFullPeriod(startStr, endStr);
+  if (months > 0) {
+    const opt = document.createElement('option');
+    opt.value = months;
+    opt.setAttribute('data-full', '1');
+    opt.textContent = `全期（${months} 個月，共 ${total.toLocaleString()} 元）`;
+    sel.appendChild(opt);
+  }
+  _updateRentAmountPreview();
+}
+
+function _updateRentAmountPreview() {
+  const startStr = document.getElementById('rentStartDate').value;
+  const endStr   = document.getElementById('rentExpectedEnd').value;
+  const amtDiv   = document.getElementById('rentAmountPreview');
+  if (!amtDiv) return;
+  if (startStr && endStr) {
+    const { months, total } = calcFullPeriod(startStr, endStr);
+    document.getElementById('rentAmountVal').textContent = `${total.toLocaleString()} 元`;
+    document.getElementById('rentAmountDetail').textContent =
+      `全期 ${months} 個月，${startStr} 至 ${endStr}`;
+    amtDiv.classList.remove('d-none');
+  } else {
+    amtDiv.classList.add('d-none');
+  }
+}
+
+function updateTransferRefund() {
+  const startDate = document.getElementById('transferStartDate').value;
+  const done     = document.getElementById('transferRefundDone');
+  const suggest  = document.getElementById('transferRefundSuggestion');
+  const conflict = document.getElementById('transferRefundConflict');
+  [done, suggest, conflict].forEach(el => el.classList.add('d-none'));
+  if (!startDate) return;
+
+  // 現任結束日 = 下一位起租日的前一天
+  const [_y, _m, _d] = startDate.split('-').map(Number);
+  const prevEnd = _localDateStr(new Date(_y, _m - 1, _d - 1));
+
+  // _calcRefund 已回傳 NET（扣除既有確認退費）
+  const refund    = _calcRefund(prevEnd);
+  const confirmed = _currentSpot.confirmedRefundAmount || 0;
+
+  if (refund === 0) {
+    document.getElementById('transferRefund').value = 0;
+    if (confirmed > 0) {
+      document.getElementById('transferRefundDoneAmt').textContent = confirmed.toLocaleString();
+      done.classList.remove('d-none');
+    }
+  } else {
+    document.getElementById('transferRefund').value = refund;
+    document.getElementById('transferRefundSuggest').textContent = refund.toLocaleString();
+    suggest.classList.remove('d-none');
+    if (confirmed > 0) {
+      const _prevName  = _currentSpot.tenantName  || '前車主';
+      const _prevPhone = _currentSpot.tenantPhone ? ` 電話/Line：${_currentSpot.tenantPhone}` : '';
+      document.getElementById('transferRefundConflictMsg').textContent =
+        `前車主退費已確認 ${confirmed.toLocaleString()} 元，依新起租日尚需再退 ${refund.toLocaleString()} 元給前車主 ${_prevName}${_prevPhone}。`;
+      conflict.classList.remove('d-none');
+    }
+  }
+}
+
+function updateTransferExpectedEnd() {
+  const startDateStr = document.getElementById('transferStartDate').value;
+  if (!startDateStr) return;
+  const months = parseInt(document.getElementById('transferDurationMonths').value) || 12;
+  const d = new Date(startDateStr);
+  d.setMonth(d.getMonth() + months);
+  d.setDate(d.getDate() - 1);
+  document.getElementById('transferExpectedEnd').value = d.toISOString().slice(0,10);
+  _checkTransferDateConflict();
+}
+
+function _checkTransferDateConflict() {
+  const startStr = document.getElementById('transferStartDate').value;
+  const conflictDiv = document.getElementById('transferDateConflict');
+  conflictDiv.classList.add('d-none');
+  if (!startStr || !_currentSpot.expectedEnd) return;
+  const start = new Date(startStr);
+  const end   = new Date(_currentSpot.expectedEnd);
+  if (start <= end) {
+    const diffMs   = end - start + 86400000;          // 含首尾天數
+    const diffDays = Math.round(diffMs / 86400000);
+    const msgEl = document.getElementById('transferDateConflictMsg');
+    msgEl.innerHTML =
+      `<strong>租約衝突，無法預約！</strong><br>` +
+      `現任車主：<strong>${_currentSpot.tenantName || '—'}</strong>` +
+      `（${_currentSpot.tenantPhone || '無電話/Line ID'}，車牌 ${_currentSpot.tenantPlate || '—'}）<br>` +
+      `現任租約到期日：<strong>${_currentSpot.expectedEnd}</strong><br>` +
+      `新租約起租日：<strong>${startStr}</strong><br>` +
+      `衝突重疊：${startStr} ～ ${_currentSpot.expectedEnd}，共 <strong>${diffDays} 天</strong>`;
+    conflictDiv.classList.remove('d-none');
+  }
+}
+
+
+let _tenantTabMode = 'select';  // 'select' | 'new'
+
+function switchTenantTab(mode) {
+  _tenantTabMode = mode;
+  const isNew = (mode === 'new');
+  document.getElementById('sectionSelectTenant').classList.toggle('d-none', isNew);
+  document.getElementById('sectionNewTenant').classList.toggle('d-none', !isNew);
+  document.getElementById('tabSelectTenant').classList.toggle('active', !isNew);
+  document.getElementById('tabNewTenant').classList.toggle('active', isNew);
+  if (isNew) {
+    document.getElementById('newTenantName').value  = '';
+    document.getElementById('newTenantPhone').value = '';
+    document.getElementById('newTenantPlate').value = '';
+  }
+}
+
+function doRent() {
+  // 先驗證必填欄位
+  if (_tenantTabMode === 'select') {
+    if (!document.getElementById('rentTenantId').value) {
+      alert('請選擇車主，或切換「新增車主」分頁建立新車主'); return;
+    }
+  } else {
+    if (!document.getElementById('newTenantName').value.trim()) {
+      alert('請輸入車主姓名'); return;
+    }
+    if (!document.getElementById('newTenantPhone').value.trim()) {
+      alert('請輸入電話/Line ID（作為車主唯一身份識別）'); return;
+    }
+  }
+  const startDate    = document.getElementById('rentStartDate').value;
+  const monthlyFee   = 1000;
+  const spotId       = parseInt(_currentSpot.spotId);
+  const prepaidMonths = parseInt(document.getElementById('rentPrepaidMonths').value) || 0;
+
+  const _proceed = (tenantId) => {
+    let msg;
+    if (prepaidMonths === 0) {
+      msg = `確認出租車位 ${_currentSpot.spotNumber}？\n不預繳，出租後再另行記錄繳費。`;
+    } else {
+      const selOpt = document.getElementById('rentPrepaidMonths').selectedOptions[0];
+      const lastAmt = parseInt(selOpt.getAttribute('data-last-amount') || '1000');
+      const totalAmt = selOpt.getAttribute('data-last-amount')
+        ? ((prepaidMonths - 1) * monthlyFee + lastAmt)
+        : prepaidMonths * monthlyFee;
+      msg = `確認出租車位 ${_currentSpot.spotNumber}？\n預付 ${prepaidMonths} 個月租金，共 ${totalAmt.toLocaleString()} 元\n系統將自動建立 ${prepaidMonths} 筆繳費記錄。`;
+    }
+    if (!confirm(msg)) return;
+    _submitRent(spotId, tenantId, monthlyFee, startDate);
+  };
+
+  if (_tenantTabMode === 'select') {
+    const tenantId = document.getElementById('rentTenantId').value;
+    if (!tenantId) { alert('請選擇車主'); return; }
+    _proceed(parseInt(tenantId));
+  } else {
+    const name  = document.getElementById('newTenantName').value.trim();
+    const phone = document.getElementById('newTenantPhone').value.trim();
+    const plate = document.getElementById('newTenantPlate').value.trim();
+    if (!name) { alert('請輸入車主姓名'); return; }
+    fetch('/api/quick-tenant', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, phone, license_plate: plate })
+    })
+    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) { alert('建立車主失敗：' + r.msg); return; }
+      _proceed(r.tenant_id);
+    });
+  }
+}
+
+function _submitRent(spotId, tenantId, monthlyFee, startDate) {
+  const expectedEnd = document.getElementById('rentExpectedEnd').value || null;
+  const prepaidMonths = parseInt(document.getElementById('rentPrepaidMonths').value) || 0;
+  const selOpt = document.getElementById('rentPrepaidMonths').selectedOptions[0];
+  const lastMonthAmount = parseInt(selOpt.getAttribute('data-last-amount') || '1000');
+  fetch('/api/quick-rent', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ spot_id: spotId, tenant_id: tenantId, monthly_fee: monthlyFee, start_date: startDate, expected_end_date: expectedEnd, prepaid_months: prepaidMonths, last_month_amount: lastMonthAmount })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function togglePayEdit(show) {
+  document.getElementById('payEditView').classList.toggle('d-none', !show);
+  document.getElementById('prepaidAddView').classList.add('d-none');
+  document.getElementById('alreadyPaidMain').classList.toggle('d-none', show);
+  if (show) document.getElementById('payEditAmount').value = _currentSpot.paymentAmount;
+}
+
+function doUpdatePayment() {
+  const amount = parseInt(document.getElementById('payEditAmount').value);
+  if (isNaN(amount) || amount < 0) { alert('請輸入有效金額'); return; }
+  fetch('/api/update-payment', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ payment_id: parseInt(_currentSpot.paymentId), amount })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function doDeletePayment() {
+  if (!confirm('確定刪除此筆繳費記錄？')) return;
+  fetch('/api/delete-payment', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ payment_id: parseInt(_currentSpot.paymentId) })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function togglePrepaidAdd(show) {
+  document.getElementById('prepaidAddView').classList.toggle('d-none', !show);
+  document.getElementById('prepaidSimpleRow').classList.toggle('d-none', show);
+  if (show) document.getElementById('prepaidAddMonths').value = '1';
+}
+
+function doAddPrepaid() {
+  const months = parseInt(document.getElementById('prepaidAddMonths').value) || 1;
+  const total = (months * 1000).toLocaleString();
+  if (!confirm(`確認追加預繳 ${months} 個月，共 ${total} 元？`)) return;
+  fetch('/api/add-prepaid', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ rental_id: parseInt(_currentSpot.rentalId), months })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function doPay() {
+  fetch('/api/quick-pay', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      rental_id:    parseInt(_currentSpot.rentalId),
+      amount:       parseInt(document.getElementById('payAmount').value) || 0,
+      period_month: _currentSpot.currentMonth,
+    })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function _nextChargeMeta() {
+  const banner = document.getElementById('nextChargeBanner');
+  return {
+    months: parseInt(banner.dataset.months) || 0,
+    total:  parseInt(banner.dataset.total)  || 0,
+  };
+}
+
+function doConfirmNextFullCharge() {
+  const { months, total } = _nextChargeMeta();
+  if (!months || !total) { alert('無法計算收款月數，請確認起租日與結束日'); return; }
+  if (!confirm(`確認收取 ${_currentSpot.nextTenantName} 預繳款 ${total.toLocaleString()} 元？\n收款後將轉為獨立預約記錄。`)) return;
+  fetch('/api/confirm-next-prepaid', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      rental_id: parseInt(_currentSpot.rentalId),
+      mode:      'full',
+      months,
+    }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function toggleNextPartialChargeForm(show) {
+  const form = document.getElementById('nextPartialChargeForm');
+  form.classList.toggle('d-none', !show);
+  if (show) {
+    const { total } = _nextChargeMeta();
+    const inp = document.getElementById('nextPartialChargeInput');
+    inp.value = total;
+    inp.max = total;
+    inp.focus();
+    inp.select();
+  }
+}
+
+function doNextPartialCharge() {
+  const { months, total } = _nextChargeMeta();
+  const amt = parseInt(document.getElementById('nextPartialChargeInput').value) || 0;
+  if (amt <= 0) { alert('請輸入收款金額'); return; }
+  if (amt > total) { alert(`金額不可超過待補繳總額 ${total.toLocaleString()} 元`); return; }
+  const remaining = total - amt;
+  const note = remaining > 0 ? `\n（剩餘 ${remaining.toLocaleString()} 元待後續補繳）` : '';
+  if (!confirm(`確認已收取 ${amt.toLocaleString()} 元？${note}\n收款後將轉為獨立預約記錄。`)) return;
+  fetch('/api/confirm-next-prepaid', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      rental_id:      parseInt(_currentSpot.rentalId),
+      mode:           'partial',
+      months,
+      partial_amount: amt,
+    }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function doWaiveNextCharge() {
+  const { months, total } = _nextChargeMeta();
+  if (!months || !total) { alert('無法計算豁免金額，請確認起租日與結束日'); return; }
+  if (!confirm(`確定豁免 ${_currentSpot.nextTenantName} 預繳款 ${total.toLocaleString()} 元？\n此筆將記入支出備查，不計入收入。\n預約將轉為獨立預約記錄。`)) return;
+  fetch('/api/confirm-next-prepaid', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      rental_id: parseInt(_currentSpot.rentalId),
+      mode:      'waive',
+      months,
+    }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function toggleNextTenantEdit(show) {
+  document.getElementById('nextInfoView').classList.toggle('d-none', show);
+  document.getElementById('nextEditView').classList.toggle('d-none', !show);
+  document.getElementById('nextEditBtnRow').classList.toggle('d-none', show);
+  document.getElementById('nextChargeBanner').classList.toggle('d-none', show);
+  document.getElementById('nextPartialChargeForm').classList.add('d-none');
+  if (show) {
+    const sel = document.getElementById('nextEditTenantId');
+    if (_currentSpot.nextTenantId) sel.value = _currentSpot.nextTenantId;
+    document.getElementById('nextEditStartDate').value   = _currentSpot.nextStartDate   || '';
+    document.getElementById('nextEditExpectedEnd').value = _currentSpot.nextExpectedEnd || '';
+  }
+}
+
+function doUpdateNextTenant() {
+  const tenantId = parseInt(document.getElementById('nextEditTenantId').value);
+  const startDate = document.getElementById('nextEditStartDate').value || '';
+  const expectedEnd = document.getElementById('nextEditExpectedEnd').value || '';
+  if (!tenantId) { alert('請選擇車主'); return; }
+  if (!startDate) { alert('請填寫起租日'); return; }
+  fetch('/api/update-next-tenant', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      rental_id:         parseInt(_currentSpot.rentalId),
+      tenant_id:         tenantId,
+      start_date:        startDate,
+      expected_end_date: expectedEnd || null,
+    }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + (r.msg || r.error || '未知錯誤'));
+  });
+}
+
+// 計算「補足至結束日」的差額與期數
+// 結算邏輯：已繳總額 vs 全期應繳總額，多退少補
+function _calcFillToEnd() {
+  const expectedEnd = _currentSpot.expectedEnd;
+  const startDate   = _currentSpot.startDate;
+  if (!expectedEnd || !startDate) return null;
+  const fee = _currentSpot.monthlyFee || 1000;
+
+  const { total: totalExpected } = calcFullPeriod(startDate, expectedEnd, fee);
+  const totalPaidAll = _currentSpot.totalPaidAll || 0;
+  const confirmedRefund = _currentSpot.confirmedRefundAmount || 0;
+  const chargeWaiver = _currentSpot.confirmedChargeWaiverAmount || 0;
+  const netPaid = totalPaidAll - confirmedRefund + chargeWaiver;
+  const remaining = totalExpected - netPaid;
+
+  if (remaining <= 0) return { months: 0, total: 0, lastAmount: fee, startPeriod: '' };
+
+  const months = Math.round(remaining / fee);
+  const effectivePaidMonths = Math.floor(netPaid / fee);
+  const [sy, sm] = startDate.split('-').map(Number);
+  const targetIdx = (sm - 1) + effectivePaidMonths;
+  const nextY = sy + Math.floor(targetIdx / 12);
+  const nextM = targetIdx % 12 + 1;
+  const startPeriod = `${nextY}-${String(nextM).padStart(2,'0')}`;
+
+  return { months, total: remaining, lastAmount: fee, startPeriod };
+}
+
+function toggleAlreadyPaidPrepaid(show) {
+  const sec = document.getElementById('alreadyPaidPrepaidSection');
+  sec.classList.toggle('d-none', !show);
+  if (show) _updateAlreadyPaidHint();
+}
+
+function _updateAlreadyPaidHint() {
+  const val = document.getElementById('alreadyPaidPrepaidMonths').value;
+  const hint = document.getElementById('alreadyPaidPrepaidHint');
+  if (val === 'fill') {
+    const fill = _calcFillToEnd();
+    if (!fill || fill.months === 0) {
+      hint.textContent = _currentSpot.expectedEnd ? '已繳至預計結束日，無需補足' : '請先設定預計結束日';
+    } else {
+      hint.textContent = `補足 ${fill.months} 個月至 ${_currentSpot.expectedEnd}，合計 ${fill.total.toLocaleString()} 元`;
+    }
+  } else {
+    const fee = _currentSpot.monthlyFee || 1000;
+    const months = parseInt(val) || 1;
+    hint.textContent = `追加 ${months} 個月，合計 ${(months * fee).toLocaleString()} 元（月租金 ${fee.toLocaleString()} 元）`;
+  }
+}
+
+function doAlreadyPaidPrepaid() {
+  const val = document.getElementById('alreadyPaidPrepaidMonths').value;
+  const fee = _currentSpot.monthlyFee || 1000;
+  let months, lastAmount, totalLabel, startPeriod = '';
+  if (val === 'fill') {
+    const fill = _calcFillToEnd();
+    if (!fill || fill.months === 0) { alert('已繳至結束日或未設定結束日，無法自動計算'); return; }
+    months = fill.months; lastAmount = fill.lastAmount;
+    totalLabel = fill.total.toLocaleString();
+    startPeriod = fill.startPeriod || '';
+  } else {
+    months = parseInt(val) || 1; lastAmount = 0;
+    totalLabel = (months * fee).toLocaleString();
+  }
+  if (!confirm(`確認追加預繳 ${months} 個月，共 ${totalLabel} 元？`)) return;
+  fetch('/api/add-prepaid', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ rental_id: parseInt(_currentSpot.rentalId), months, last_amount: lastAmount || 0, start_period: startPeriod || undefined }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function toggleFirstPrepaid(show) {
+  document.getElementById('singlePaySection').classList.toggle('d-none', show);
+  const sec = document.getElementById('firstPrepaidSection');
+  sec.classList.toggle('d-none', !show);
+  if (show) _updateFirstPrepaidHint();
+}
+
+function _updateFirstPrepaidHint() {
+  const val = document.getElementById('firstPrepaidMonths').value;
+  const hint = document.getElementById('firstPrepaidHint');
+  if (val === 'fill') {
+    const fill = _calcFillToEnd();
+    if (!fill || fill.months === 0) {
+      hint.textContent = _currentSpot.expectedEnd ? '已繳至預計結束日，無需補足' : '請先設定預計結束日';
+    } else {
+      hint.textContent = `共 ${fill.months} 個月至 ${_currentSpot.expectedEnd}，合計 ${fill.total.toLocaleString()} 元`;
+    }
+  } else {
+    const fee = _currentSpot.monthlyFee || 1000;
+    const months = parseInt(val) || 2;
+    hint.textContent = `共 ${months} 個月，合計 ${(months * fee).toLocaleString()} 元（月租金 ${fee.toLocaleString()} 元）`;
+  }
+}
+
+function doFirstPrepaid() {
+  const val = document.getElementById('firstPrepaidMonths').value;
+  const fee = _currentSpot.monthlyFee || 1000;
+  let months, lastAmount, totalLabel, startPeriod = '';
+  if (val === 'fill') {
+    const fill = _calcFillToEnd();
+    if (!fill || fill.months === 0) { alert('已繳至結束日或未設定結束日，無法自動計算'); return; }
+    months = fill.months; lastAmount = fill.lastAmount;
+    totalLabel = fill.total.toLocaleString();
+    startPeriod = fill.startPeriod || '';
+  } else {
+    months = parseInt(val) || 2; lastAmount = 0;
+    totalLabel = (months * fee).toLocaleString();
+  }
+  if (!confirm(`確認預繳 ${months} 個月，共 ${totalLabel} 元？`)) return;
+  fetch('/api/add-prepaid', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ rental_id: parseInt(_currentSpot.rentalId), months, last_amount: lastAmount || 0, start_period: startPeriod || undefined }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function doConfirmRefund() {
+  const reason = (document.getElementById('refundReason').value || '').trim();
+  if (!reason) { alert('請填寫退款原因後再確認。'); return; }
+  if (!confirm(`確認已將 ${_currentSpot.pendingRefundAmount.toLocaleString()} 元退還給車主？`)) return;
+  fetch('/api/confirm-refund', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ expense_id: parseInt(_currentSpot.pendingRefundId), reason })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+async function doWaiveFromBanner() {
+  const originalAmt = _currentSpot.pendingRefundAmount || 0;
+  if (!_currentSpot.rentalId) return;
+  if (!confirm(
+    `確認記錄「車主告知不需退款」？\n` +
+    (originalAmt > 0 ? `原待退款：${originalAmt.toLocaleString()} 元\n` : '') +
+    `將清除待確認的退費記錄，並留下豁免備查記錄（不計入支出）。`
+  )) return;
+  const resp = await fetch('/api/waive-refund', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rental_id:         _currentSpot.rentalId,
+      amount:            originalAmt,
+      original_end_date: _currentSpot.originalExpectedEnd,
+      modified_end_date: _currentSpot.expectedEnd,
+    }),
+  });
+  const data = await resp.json();
+  if (data.ok) {
+    modal.hide();
+    location.reload();
+  } else {
+    alert('操作失敗：' + (data.error || '未知錯誤'));
+  }
+}
+
+async function openNextTransfer() {
+  const sel = document.getElementById('nextTransferSpot');
+  sel.innerHTML = '<option value="">載入中…</option>';
+  document.getElementById('nextTransferSection').classList.remove('d-none');
+  const resp = await fetch('/api/vacant-spots');
+  const data = await resp.json();
+  sel.innerHTML = '<option value="">— 選擇空置車位 —</option>';
+  if (data.spots && data.spots.length > 0) {
+    data.spots.forEach(s => {
+      sel.innerHTML += `<option value="${s.id}">車位 ${s.spot_number}</option>`;
+    });
+  } else {
+    sel.innerHTML = '<option value="">目前無空置車位</option>';
+  }
+}
+
+async function doTransferToVacant() {
+  const spotId = parseInt(document.getElementById('nextTransferSpot').value);
+  if (!spotId) { alert('請選擇目標車位'); return; }
+  const spotText = document.getElementById('nextTransferSpot').selectedOptions[0].text;
+  if (!confirm(
+    `確認將「${_currentSpot.nextTenantName}」的預約換租移至 ${spotText}？\n` +
+    `將立即建立租約（預繳 ${_currentSpot.nextPrepaidMonths} 個月），並清除此車位的預約記錄。`
+  )) return;
+  const resp = await fetch('/api/transfer-to-vacant', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rental_id: _currentSpot.rentalId, spot_id: spotId }),
+  });
+  const data = await resp.json();
+  if (data.ok) { modal.hide(); location.reload(); }
+  else alert('轉移失敗：' + (data.error || '未知錯誤'));
+}
+
+function doCancelTransfer() {
+  if (!confirm('確定取消預約換租？')) return;
+  fetch('/api/cancel-transfer', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ rental_id: parseInt(_currentSpot.rentalId) })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+
+function updateEndRefund() {
+  const endDate   = document.getElementById('endDate').value;
+  const done      = document.getElementById('endRefundDone');
+  const suggest   = document.getElementById('endRefundSuggestion');
+  const conflict  = document.getElementById('endRefundConflict');
+  const chargeSec = document.getElementById('endChargeSection');
+  const summary   = document.getElementById('endSettlementSummary');
+  [done, suggest, conflict, chargeSec, summary].forEach(el => el.classList.add('d-none'));
+  document.getElementById('extraChargeAmount').value = 0;
+  if (!endDate) return;
+
+  // 與下一位車主起租日衝突檢查
+  const _nextStart = _currentSpot.nextStartDate || _currentSpot.futureRentalStart || '';
+  const _nextName  = _currentSpot.nextTenantName || _currentSpot.futureTenantName || '下一位車主';
+  if (_nextStart && endDate >= _nextStart) {
+    document.getElementById('endRefundConflictMsg').textContent =
+      `退租日 ${endDate} 晚於或等於${_nextName}的起租日 ${_nextStart}，請調整退租日`;
+    conflict.classList.remove('d-none');
+    document.getElementById('endSubmitBtn').disabled = true;
+    return;
+  }
+  document.getElementById('endSubmitBtn').disabled = false;
+
+  const startDate    = _currentSpot.startDate || '';
+  const fee          = _currentSpot.monthlyFee || 1000;
+  const totalPaidAll = _currentSpot.totalPaidAll || 0;
+  const confirmed    = _currentSpot.confirmedRefundAmount || 0;
+  const waiver       = _currentSpot.confirmedChargeWaiverAmount || 0;
+  const netPaid      = totalPaidAll - confirmed + waiver;
+
+  if (!startDate) return;
+
+  const { total: totalExpected } = calcFullPeriod(startDate, endDate, fee);
+  const remaining = totalExpected - netPaid;
+
+  // 結算摘要（自動計算，取代原手動輸入退費金額）
+  const _adjParts = [];
+  if (confirmed > 0) _adjParts.push(`退 ${confirmed.toLocaleString()}`);
+  if (waiver > 0)    _adjParts.push(`豁免 ${waiver.toLocaleString()}`);
+  const _paidText = _adjParts.length
+    ? `${netPaid.toLocaleString()} 元（${totalPaidAll.toLocaleString()} − ${_adjParts.join('、')}）`
+    : `${netPaid.toLocaleString()} 元`;
+  document.getElementById('endSettleExpected').textContent = `${totalExpected.toLocaleString()} 元`;
+  document.getElementById('endSettlePaid').textContent     = _paidText;
+  const balanceEl = document.getElementById('endSettleBalance');
+  balanceEl.classList.remove('text-danger', 'text-success', 'text-warning');
+  if (remaining > 0) {
+    balanceEl.textContent = `應補 ${remaining.toLocaleString()} 元`;
+    balanceEl.classList.add('text-danger');
+  } else if (remaining === 0) {
+    balanceEl.textContent = '已繳清';
+    balanceEl.classList.add('text-success');
+  } else {
+    balanceEl.textContent = `應退 ${(-remaining).toLocaleString()} 元`;
+    balanceEl.classList.add('text-warning');
+  }
+  summary.classList.remove('d-none');
+
+  if (remaining > 0) {
+    // 應繳 > 淨繳 → 補繳
+    const _adj = [];
+    if (confirmed > 0) _adj.push(`− 退 ${confirmed.toLocaleString()}`);
+    if (waiver > 0)    _adj.push(`+ 豁免 ${waiver.toLocaleString()}`);
+    const _paidLabel = _adj.length
+      ? `已繳 ${netPaid.toLocaleString()} 元（${totalPaidAll.toLocaleString()} ${_adj.join(' ')}）`
+      : `已繳 ${netPaid.toLocaleString()} 元`;
+    document.getElementById('endChargePaidUntil').textContent =
+      `${_paidLabel}，應繳 ${totalExpected.toLocaleString()} 元`;
+    document.getElementById('endChargeSuggest').textContent = remaining.toLocaleString();
+    document.getElementById('extraChargeAmount').value      = remaining;
+    document.getElementById('refundAmount').value = 0;
+    chargeSec.classList.remove('d-none');
+    return;
+  }
+
+  // 淨繳 >= 應繳 → 退款邏輯（refund 為本次尚需補退給車主的金額）
+  const refund = Math.max(0, -remaining);
+
+  if (refund === 0) {
+    document.getElementById('refundAmount').value = 0;
+    if (confirmed > 0) {
+      document.getElementById('endRefundDoneAmt').textContent = confirmed.toLocaleString();
+      done.classList.remove('d-none');
+    }
+  } else {
+    document.getElementById('refundAmount').value = refund;
+    document.getElementById('endRefundSuggest').textContent = refund.toLocaleString();
+    suggest.classList.remove('d-none');
+  }
+}
+
+function doEnd() {
+  const endDate     = document.getElementById('endDate').value;
+  if (!endDate) { alert('請選擇退租日期'); return; }
+  const refund      = parseInt(document.getElementById('refundAmount').value)    || 0;
+  const extraCharge = parseInt(document.getElementById('extraChargeAmount').value) || 0;
+  const confirmedAmt = _currentSpot.confirmedRefundAmount || 0;
+  // refund 已是「本次需再退」的淨額
+  let msg;
+  if (extraCharge > 0) {
+    msg = `已修改退租日（${endDate}）請向車主收取補繳款 ${extraCharge.toLocaleString()} 元`;
+  } else if (refund > 0 && confirmedAmt > 0) {
+    msg =
+      `退費確認\n` +
+      `────────────────\n` +
+      `• 已退款：${confirmedAmt.toLocaleString()} 元\n` +
+      `• 本次再退：${refund.toLocaleString()} 元\n` +
+      `• 累計退費：${(confirmedAmt + refund).toLocaleString()} 元\n` +
+      `────────────────\n` +
+      `確認退租並再退 ${refund.toLocaleString()} 元給車主？`;
+  } else if (refund > 0) {
+    msg = `確定退租（${endDate}）並退費 ${refund.toLocaleString()} 元？`;
+  } else {
+    msg = `確定結束車位 ${_currentSpot.spotNumber} 的出租（${endDate}）？`;
+  }
+  if (!confirm(msg)) return;
+  fetch('/api/quick-end', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ rental_id: parseInt(_currentSpot.rentalId), refund_amount: refund, extra_charge: extraCharge, end_date: endDate })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+let _transferTabMode = 'select';
+
+// 依分頁與下拉選擇切換確認按鈕文字：選原車主 → 延長合約；其他情境 → 確認預約
+function _updateTransferConfirmLabel() {
+  const label = document.getElementById('transferConfirmBtnLabel');
+  if (!label) return;
+  const sel = document.getElementById('transferTenantId');
+  const curId = sel ? (sel.dataset.curTenantId || '') : '';
+  const isExtend = _transferTabMode === 'select' && !!curId && sel.value === curId;
+  label.textContent = isExtend ? '延長合約' : '確認預約';
+}
+
+function switchTransferTab(mode) {
+  _transferTabMode = mode;
+  const isNew = mode === 'new';
+  document.getElementById('sectionTransferSelect').classList.toggle('d-none', isNew);
+  document.getElementById('sectionTransferNew').classList.toggle('d-none', !isNew);
+  document.getElementById('tabTransferSelect').classList.toggle('active', !isNew);
+  document.getElementById('tabTransferNew').classList.toggle('active', isNew);
+  if (isNew) {
+    document.getElementById('transferNewName').value  = '';
+    document.getElementById('transferNewPhone').value = '';
+    document.getElementById('transferNewPlate').value = '';
+  }
+  _updateTransferConfirmLabel();
+}
+
+function _submitTransfer(tenantId) {
+  const startDate     = document.getElementById('transferStartDate').value;
+  const expEnd        = document.getElementById('transferExpectedEnd').value || null;
+  const refund        = parseInt(document.getElementById('transferRefund').value) || 0;
+  const prepaidMonths = parseInt(document.getElementById('transferPrepaidMonths').value) || 1;
+  const confirmedAmt  = _currentSpot.confirmedRefundAmount || 0;
+  if (!startDate) { alert('請設定起租日'); return; }
+
+  // 確認視窗：refund 已是「本次需再退」的淨額
+  let confirmMsg;
+  if (refund > 0 && confirmedAmt > 0) {
+    confirmMsg =
+      `退費確認\n` +
+      `────────────────\n` +
+      `• 已退款：${confirmedAmt.toLocaleString()} 元\n` +
+      `• 本次再退：${refund.toLocaleString()} 元\n` +
+      `• 累計退費：${(confirmedAmt + refund).toLocaleString()} 元\n` +
+      `────────────────\n` +
+      `確認換租並再退 ${refund.toLocaleString()} 元給車主？`;
+  } else if (refund > 0) {
+    confirmMsg = `確認換租並退費 ${refund.toLocaleString()} 元給車主？`;
+  } else {
+    confirmMsg = `確認預約?`;
+  }
+  if (!confirm(confirmMsg)) return;
+
+  fetch('/api/transfer-rental', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      rental_id: parseInt(_currentSpot.rentalId),
+      tenant_id: tenantId,
+      monthly_fee: 1000,
+      start_date: startDate,
+      expected_end_date: expEnd,
+      refund_amount: refund,
+      prepaid_months: prepaidMonths,
+    })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { transferBsModal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function doTransfer() {
+  const startDate = document.getElementById('transferStartDate').value;
+  if (!startDate) { alert('請設定起租日'); return; }
+
+  // 有日期衝突時禁止送出
+  if (!document.getElementById('transferDateConflict').classList.contains('d-none')) {
+    alert('❌ 日期衝突，無法預約！\n請將起租日設定在現任車主到期日（' + (_currentSpot.expectedEnd || '?') + '）之後。');
+    return;
+  }
+
+  if (_transferTabMode === 'select') {
+    const tenantId = document.getElementById('transferTenantId').value;
+    if (!tenantId) { alert('請選擇下一位車主'); return; }
+    _submitTransfer(parseInt(tenantId));
+  } else {
+    const name  = document.getElementById('transferNewName').value.trim();
+    const phone = document.getElementById('transferNewPhone').value.trim();
+    const plate = document.getElementById('transferNewPlate').value.trim();
+    if (!name) { alert('請輸入車主姓名'); return; }
+    if (!phone) { alert('請輸入電話/Line ID（作為車主唯一身份識別）'); return; }
+    fetch('/api/quick-tenant', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, phone, license_plate: plate })
+    })
+    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) { alert('建立車主失敗：' + r.msg); return; }
+      _submitTransfer(r.tenant_id);
+    });
+  }
+}
+
+// ── 退款計算共用函數 ────────────────────────────────────────
+// 回傳「尚需退給車主」的淨額（= 淨繳 - 應繳；已扣除既有確認退費並計入補繳豁免）
+function _calcRefund(endDateStr) {
+  if (!endDateStr || !_currentSpot.startDate) return 0;
+  const fee = _currentSpot.monthlyFee || 1000;
+  const { total: totalExpected } = calcFullPeriod(_currentSpot.startDate, endDateStr, fee);
+  const totalPaid = _currentSpot.totalPaidAll || 0;
+  const confirmed = _currentSpot.confirmedRefundAmount || 0;
+  const waiver    = _currentSpot.confirmedChargeWaiverAmount || 0;
+  const netPaid   = totalPaid - confirmed + waiver;
+  return Math.max(0, netPaid - totalExpected);
+}
+
+function toggleRentalEdit(show) {
+  document.getElementById('infoView').classList.toggle('d-none', show);
+  document.getElementById('editView').classList.toggle('d-none', !show);
+  if (show) {
+    // 預填編輯表單
+    const sel = document.getElementById('editTenantId');
+    if (_currentSpot.tenantId) sel.value = _currentSpot.tenantId;
+    document.getElementById('editStartDate').value   = _currentSpot.startDate   || '';
+    document.getElementById('editExpectedEnd').value = _currentSpot.expectedEnd || '';
+  }
+}
+
+function doUpdateRental() {
+  fetch('/api/update-rental', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      rental_id:          parseInt(_currentSpot.rentalId),
+      tenant_id:          parseInt(document.getElementById('editTenantId').value),
+      monthly_fee:        1000,
+      start_date:         document.getElementById('editStartDate').value || null,
+      expected_end_date:  document.getElementById('editExpectedEnd').value || null,
+    })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+
+async function doMoveRental() {
+  const spotId = parseInt(document.getElementById('moveTargetSpot').value);
+  if (!spotId) { alert('請選擇目標車位'); return; }
+  const spotText = document.getElementById('moveTargetSpot').selectedOptions[0].text;
+  const ctx = _moveContext || { rentalId: _currentSpot.rentalId, label: `車位 ${_currentSpot.spotNumber} 的租約`, tenantName: _currentSpot.tenantName || '' };
+  if (!confirm(
+    `確認將${ctx.label}移至 ${spotText}？\n` +
+    `車主 ${ctx.tenantName} 及所有繳費記錄將同步移轉。`
+  )) return;
+  const resp = await fetch('/api/move-rental', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rental_id: parseInt(ctx.rentalId), spot_id: spotId }),
+  });
+  const data = await resp.json();
+  if (data.ok) { moveBsModal.hide(); location.reload(); }
+  else alert('移轉失敗：' + (data.error || '未知錯誤'));
+}
+
+// ── 取消 / 修改預約（獨立未來租約）──────────────────────────
+
+function openCancelFutureModal() {
+  // 淨繳 = 毛繳 − 已確認退費 + 補繳豁免；預約尚未開始使用，全額作為建議退款
+  const gross = _currentSpot.futureRentalTotalPaid || 0;
+  const confirmedRefund = _currentSpot.futureRentalConfirmedRefundAmount || 0;
+  const waiver = _currentSpot.futureRentalChargeWaiverAmount || 0;
+  const netPaid = gross - confirmedRefund + waiver;
+  // 尚未繳費 → 沒有退款金額需要確認，直接以原生 confirm 詢問後送出，省略 modal
+  if (netPaid <= 0) {
+    if (!confirm(`確認取消車位 ${_currentSpot.spotNumber} 的預約（${_currentSpot.futureTenantName || '—'}）？\n（此預約尚未繳費，無需退款）`)) return;
+    fetch('/api/cancel-future-booking', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rental_id: _currentSpot.futureRentalId, refund_amount: 0 }),
+    })
+    .then(r => r.json())
+    .then(r => {
+      if (r.ok) { modal.hide(); location.reload(); }
+      else alert('錯誤：' + r.msg);
+    });
+    return;
+  }
+  modal.hide();
+  document.getElementById('cancelFutureSpot').textContent  = _currentSpot.spotNumber;
+  document.getElementById('cancelFutureName').textContent  = _currentSpot.futureTenantName || '—';
+  document.getElementById('cancelFutureStart').textContent = _currentSpot.futureRentalStart || '—';
+  const months = _currentSpot.futureRentalPaidMonths || 0;
+  let paidLabel;
+  if (confirmedRefund > 0 || waiver > 0) {
+    const _adj = [];
+    if (confirmedRefund > 0) _adj.push(`− 退 ${confirmedRefund.toLocaleString()}`);
+    if (waiver > 0) _adj.push(`+ 豁免 ${waiver.toLocaleString()}`);
+    paidLabel = `${months} 個月，淨 ${netPaid.toLocaleString()} 元（${gross.toLocaleString()} ${_adj.join(' ')}）`;
+  } else {
+    paidLabel = `${months} 個月（共 ${gross.toLocaleString()} 元）`;
+  }
+  document.getElementById('cancelFuturePaid').textContent = paidLabel;
+  document.getElementById('cancelFutureRefund').value = netPaid;
+  setTimeout(() => cancelFutureBsModal.show(), 300);
+}
+
+function doCancelFutureBooking() {
+  const refund = parseInt(document.getElementById('cancelFutureRefund').value) || 0;
+  const msg = refund > 0
+    ? `確認取消預約並退還 ${refund.toLocaleString()} 元給 ${_currentSpot.futureTenantName}？`
+    : `確認取消預約（不退費）？`;
+  if (!confirm(msg)) return;
+  fetch('/api/cancel-future-booking', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rental_id: _currentSpot.futureRentalId, refund_amount: refund }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { cancelFutureBsModal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+// ── 取消租約（現任車主）──────────────────────────────────
+// 取消租約 = 即刻終止；起租當月不計，之後每跨 1 個日曆月扣 1 個月租金
+function openCancelRentalModal() {
+  if (!_currentSpot.rentalId) { alert('找不到租約資訊'); return; }
+  const fee = _currentSpot.monthlyFee || 1000;
+  const startDate = _currentSpot.startDate;
+  const today = _localDateStr(new Date());
+
+  const totalPaid = _currentSpot.totalPaidAll || 0;
+  const confirmedRefund = _currentSpot.confirmedRefundAmount || 0;
+  const waiver = _currentSpot.confirmedChargeWaiverAmount || 0;
+  const netPaid = totalPaid - confirmedRefund + waiver;
+
+  // 尚未繳費 → 沒有退款金額需要確認，直接以原生 confirm 詢問後送出，省略 modal
+  if (netPaid <= 0) {
+    if (!confirm(`確認取消車位 ${_currentSpot.spotNumber} 的租約（${_currentSpot.tenantName || '—'}）？\n（尚未繳費，無需退款；租約立即結束）`)) return;
+    fetch('/api/quick-end', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rental_id: parseInt(_currentSpot.rentalId),
+        refund_amount: 0,
+        extra_charge: 0,
+        end_date: today,
+        cancel_mode: true,
+      }),
+    })
+    .then(r => r.json())
+    .then(r => {
+      if (r.ok) { modal.hide(); location.reload(); }
+      else alert('錯誤：' + r.msg);
+    });
+    return;
+  }
+
+  modal.hide();
+  // 已使用月數：起租當月不計（同月內取消視同整單作廢），跨月後每多一個日曆月計 1 個月
+  let usedMonths = 0;
+  if (startDate) {
+    const [sy, sm] = startDate.split('-').map(Number);
+    const t = new Date();
+    const ty = t.getFullYear(), tm = t.getMonth() + 1;
+    usedMonths = Math.max(0, (ty * 12 + tm) - (sy * 12 + sm));
+  }
+  const usedCharge = usedMonths * fee;
+  const refund = Math.max(0, netPaid - usedCharge);
+
+  document.getElementById('cancelRentalSpot').textContent  = _currentSpot.spotNumber;
+  document.getElementById('cancelRentalName').textContent  = _currentSpot.tenantName || '—';
+  document.getElementById('cancelRentalStart').textContent = startDate || '—';
+  const _paidLabel = (confirmedRefund > 0 || waiver > 0)
+    ? `${netPaid.toLocaleString()} 元（${totalPaid.toLocaleString()}${confirmedRefund > 0 ? ` − 退 ${confirmedRefund.toLocaleString()}` : ''}${waiver > 0 ? ` + 豁免 ${waiver.toLocaleString()}` : ''}）`
+    : `${totalPaid.toLocaleString()} 元`;
+  document.getElementById('cancelRentalPaid').textContent  = _paidLabel;
+  document.getElementById('cancelRentalUsed').textContent  = `${usedMonths} 個月（截至 ${today}）`;
+  document.getElementById('cancelRentalCharge').textContent = `${usedCharge.toLocaleString()} 元`;
+  document.getElementById('cancelRentalRefund').value      = refund;
+
+  setTimeout(() => cancelRentalBsModal.show(), 300);
+}
+
+function doCancelRental() {
+  const refund = parseInt(document.getElementById('cancelRentalRefund').value) || 0;
+  const today = _localDateStr(new Date());
+  const msg = refund > 0
+    ? `確認取消租約並退還 ${refund.toLocaleString()} 元給 ${_currentSpot.tenantName}？\n租約將結束於 ${today}。`
+    : `確認取消租約（不退費）？\n租約將結束於 ${today}。`;
+  if (!confirm(msg)) return;
+  fetch('/api/quick-end', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rental_id: parseInt(_currentSpot.rentalId),
+      refund_amount: refund,
+      extra_charge: 0,
+      end_date: today,
+      cancel_mode: true,
+    }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { cancelRentalBsModal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+// 內嵌「修改預約」面板（對應現任車主的 editView）
+function toggleInlineFutureEdit(show) {
+  const editPanel = document.getElementById('inlineFutureEditPanel');
+  const sections = ['vacantFutureSection','futureBookingSection'];
+  if (show) {
+    document.getElementById('inlineEditFutureTenant').value = _currentSpot.futureTenantId || '';
+    document.getElementById('inlineEditFutureStart').value  = _currentSpot.futureRentalStart || '';
+    document.getElementById('inlineEditFutureEnd').value    = _currentSpot.futureRentalExpectedEnd || '';
+    document.getElementById('inlineEditFutureConflict').classList.add('d-none');
+    document.getElementById('inlineEditFutureAdjustSection').classList.add('d-none');
+    document.getElementById('inlineEditFutureRefundPart').classList.add('d-none');
+    document.getElementById('inlineEditFutureChargePart').classList.add('d-none');
+    document.getElementById('inlineEditFutureSettlement').classList.add('d-none');
+    document.getElementById('inlineEditFutureRefundAmt').value = 0;
+    _inlineUpdateEditFutureAdjust();
+    sections.forEach(id => document.getElementById(id).classList.add('d-none'));
+    editPanel.classList.remove('d-none');
+  } else {
+    editPanel.classList.add('d-none');
+    // 還原顯示原本的 future section
+    if (_currentSpot.status === 'vacant' && _currentSpot.futureRentalId) {
+      document.getElementById('vacantFutureSection').classList.remove('d-none');
+    } else if (_currentSpot.futureRentalId) {
+      document.getElementById('futureBookingSection').classList.remove('d-none');
+    }
+  }
+}
+
+function _inlineCheckEditFutureConflict() {
+  const startStr = document.getElementById('inlineEditFutureStart').value;
+  const conflict = document.getElementById('inlineEditFutureConflict');
+  conflict.classList.add('d-none');
+  if (!startStr) return;
+  const today = new Date().toISOString().slice(0, 10);
+  if (startStr <= today) {
+    document.getElementById('inlineEditFutureConflictMsg').textContent = '起租日必須在今天之後';
+    conflict.classList.remove('d-none');
+    return;
+  }
+  if (_currentSpot.expectedEnd && startStr <= _currentSpot.expectedEnd) {
+    document.getElementById('inlineEditFutureConflictMsg').textContent =
+      `起租日必須在目前租約結束日（${_currentSpot.expectedEnd}）之後`;
+    conflict.classList.remove('d-none');
+  }
+}
+
+function _inlineUpdateEditFutureAdjust() {
+  const newStart    = document.getElementById('inlineEditFutureStart').value;
+  const newEnd      = document.getElementById('inlineEditFutureEnd').value;
+  const adjSection  = document.getElementById('inlineEditFutureAdjustSection');
+  const refundPart  = document.getElementById('inlineEditFutureRefundPart');
+  const chargePart  = document.getElementById('inlineEditFutureChargePart');
+  const summary     = document.getElementById('inlineEditFutureSettlement');
+  [adjSection, refundPart, chargePart, summary].forEach(el => el.classList.add('d-none'));
+  document.getElementById('inlineEditFutureRefundAmt').value = 0;
+  document.getElementById('inlineEditFutureChargeAmt').value = 0;
+  // 淨繳 = 毛繳 − 已確認退費 + 補繳豁免（用淨繳比對新期間，避免重複退費）
+  const _gross = _currentSpot.futureRentalTotalPaid || 0;
+  const _confRefund = _currentSpot.futureRentalConfirmedRefundAmount || 0;
+  const _waiver = _currentSpot.futureRentalChargeWaiverAmount || 0;
+  const _netPaid = _gross - _confRefund + _waiver;
+  if (!newStart || !newEnd) return;
+  const { total } = calcFullPeriod(newStart, newEnd);
+
+  // 結算摘要（自動計算）
+  const _adjParts = [];
+  if (_confRefund > 0) _adjParts.push(`退 ${_confRefund.toLocaleString()}`);
+  if (_waiver > 0)     _adjParts.push(`豁免 ${_waiver.toLocaleString()}`);
+  const _paidText = _adjParts.length
+    ? `${_netPaid.toLocaleString()} 元（${_gross.toLocaleString()} − ${_adjParts.join('、')}）`
+    : `${_netPaid.toLocaleString()} 元`;
+  document.getElementById('inlineEditFutureSettleExp').textContent  = `${total.toLocaleString()} 元`;
+  document.getElementById('inlineEditFutureSettlePaid').textContent = _paidText;
+  const balEl = document.getElementById('inlineEditFutureSettleBal');
+  balEl.classList.remove('text-danger', 'text-success', 'text-warning');
+  const remaining = total - _netPaid;
+  if (remaining > 0) {
+    balEl.textContent = `應補 ${remaining.toLocaleString()} 元`;
+    balEl.classList.add('text-danger');
+  } else if (remaining === 0) {
+    balEl.textContent = '已繳清';
+    balEl.classList.add('text-success');
+  } else {
+    balEl.textContent = `應退 ${(-remaining).toLocaleString()} 元`;
+    balEl.classList.add('text-warning');
+  }
+  summary.classList.remove('d-none');
+
+  if (_netPaid === 0) return;
+  const diff = _netPaid - total;
+  if (diff === 0) return;
+  adjSection.classList.remove('d-none');
+  if (diff > 0) {
+    refundPart.classList.remove('d-none');
+    document.getElementById('inlineEditFutureRefundSuggest').textContent = diff.toLocaleString();
+    document.getElementById('inlineEditFutureRefundAmt').value = diff;
+    document.getElementById('inlineEditFutureChargeAmt').value = 0;
+  } else {
+    chargePart.classList.remove('d-none');
+    document.getElementById('inlineEditFutureChargeSuggest').textContent = (-diff).toLocaleString();
+    document.getElementById('inlineEditFutureChargeAmt').value = -diff;
+  }
+}
+
+function doInlineEditFutureBooking() {
+  const tenantId  = document.getElementById('inlineEditFutureTenant').value;
+  const startDate = document.getElementById('inlineEditFutureStart').value;
+  const endDate   = document.getElementById('inlineEditFutureEnd').value;
+  const refund      = parseInt(document.getElementById('inlineEditFutureRefundAmt').value) || 0;
+  const extraCharge = parseInt(document.getElementById('inlineEditFutureChargeAmt').value) || 0;
+  if (!tenantId) { alert('請選擇車主'); return; }
+  if (!startDate) { alert('請設定起租日'); return; }
+  if (!document.getElementById('inlineEditFutureConflict').classList.contains('d-none')) {
+    alert('請先修正衝突'); return;
+  }
+  let msg = '確認修改預約？';
+  if (refund > 0) msg = `確認修改預約並退還 ${refund.toLocaleString()} 元給 ${_currentSpot.futureTenantName}？`;
+  else if (extraCharge > 0) msg = `確認修改預約？補繳款 ${extraCharge.toLocaleString()} 元將在面板確認後記錄。`;
+  if (!confirm(msg)) return;
+  fetch('/api/edit-future-booking', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rental_id:         _currentSpot.futureRentalId,
+      tenant_id:         parseInt(tenantId),
+      start_date:        startDate,
+      expected_end_date: endDate || null,
+      refund_amount:     refund,
+      extra_charge:      extraCharge,
+    }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+// ── 確認收款（預約未來租約）──────────────────────────────────
+
+// 儲存「確認收款」的計算結果供 doFuturePay() 使用
+let _futurePayCalc = null;  // { months, lastAmount, total }
+
+function openFuturePayModal() {
+  modal.hide();
+  document.getElementById('futurePaySpot').textContent   = _currentSpot.spotNumber;
+  document.getElementById('futurePayTenant').textContent = _currentSpot.futureTenantName || '—';
+  document.getElementById('futurePayStart').textContent  = _currentSpot.futureRentalStart || '—';
+  _futurePayCalc = null;
+
+  // 已預繳資訊
+  const infoDiv = document.getElementById('futurePayCurrentInfo');
+  if (_currentSpot.futureRentalPaidMonths > 0) {
+    document.getElementById('futurePayAlreadyMonths').textContent = _currentSpot.futureRentalPaidMonths;
+    document.getElementById('futurePayAlreadyUntil').textContent  = _currentSpot.futureRentalPrepaidUntil || '—';
+    infoDiv.classList.remove('d-none');
+  } else {
+    infoDiv.classList.add('d-none');
+  }
+
+  const autoSec   = document.getElementById('futurePayAutoSection');
+  const manualSec = document.getElementById('futurePayManualSection');
+  const startStr  = _currentSpot.futureRentalStart;
+  const endStr    = _currentSpot.futureRentalExpectedEnd;
+
+  if (startStr && endStr) {
+    const alreadyPaid = _currentSpot.futureRentalTotalPaid || 0;
+    const waiver = _currentSpot.futureRentalChargeWaiverAmount || 0;
+    const fee = 1000;
+    const full = calcFullPeriod(startStr, endStr, fee);
+    const remaining = full.total - alreadyPaid - waiver;
+    let months, lastAmount, total, detail;
+    const _waiverNote = waiver > 0 ? `，已豁免 ${waiver.toLocaleString()} 元` : '';
+    if (remaining > 0) {
+      months = Math.round(remaining / fee);
+      lastAmount = fee;
+      total = remaining;
+      detail = alreadyPaid > 0
+        ? `補繳 ${months} 個月至 ${endStr}（已預繳 ${alreadyPaid.toLocaleString()} 元${_waiverNote}，全期應繳 ${full.total.toLocaleString()} 元）`
+        : `全期 ${months} 個月，起租 ${startStr} 至 ${endStr}`;
+    } else {
+      months = 0; lastAmount = fee; total = 0;
+      detail = `已繳清，無需補繳（已預繳 ${alreadyPaid.toLocaleString()} 元${_waiverNote} ≥ 全期應繳 ${full.total.toLocaleString()} 元）`;
+    }
+    _futurePayCalc = { months, lastAmount, total };
+    document.getElementById('futurePayAutoAmount').textContent = `${total.toLocaleString()} 元`;
+    document.getElementById('futurePayAutoDetail').textContent = detail;
+    autoSec.classList.remove('d-none');
+    manualSec.classList.add('d-none');
+  } else {
+    // 無預計結束日，回退為手動選擇
+    document.getElementById('futurePayMonths').value = '12';
+    autoSec.classList.add('d-none');
+    manualSec.classList.remove('d-none');
+  }
+
+  setTimeout(() => futurePayBsModal.show(), 300);
+}
+
+function doFuturePay() {
+  let months, lastAmount, totalLabel;
+  if (_futurePayCalc) {
+    ({ months, lastAmount, total: totalLabel } = _futurePayCalc);
+    totalLabel = totalLabel.toLocaleString();
+  } else {
+    months     = parseInt(document.getElementById('futurePayMonths').value) || 1;
+    lastAmount = 1000;
+    totalLabel = (months * 1000).toLocaleString();
+  }
+  if (!months || months <= 0) {
+    alert('已繳清，無需收款');
+    futurePayBsModal.hide();
+    return;
+  }
+  if (!confirm(
+    `確認向 ${_currentSpot.futureTenantName} 收取 ${months} 個月租金，共 ${totalLabel} 元？`
+  )) return;
+  fetch('/api/add-prepaid', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rental_id:   parseInt(_currentSpot.futureRentalId),
+      months,
+      last_amount: lastAmount,
+    }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { futurePayBsModal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+function doConfirmRentalCharge() {
+  const amt = -_currentSpot.rentalRefundPending;
+  if (!confirm(`確認已向車主收取全額補繳款 ${amt.toLocaleString()} 元？`)) return;
+  _callConfirmCharge(amt);
+}
+
+function togglePartialChargeForm(show) {
+  document.getElementById('partialChargeForm').classList.toggle('d-none', !show);
+  if (show) {
+    const remaining = -_currentSpot.rentalRefundPending;
+    const inp = document.getElementById('partialChargeInput');
+    inp.value = remaining;
+    inp.max = remaining;
+    inp.focus();
+  }
+}
+
+function doPartialCharge() {
+  const amt = parseInt(document.getElementById('partialChargeInput').value) || 0;
+  const total = -_currentSpot.rentalRefundPending;
+  if (amt <= 0) { alert('請輸入收款金額'); return; }
+  if (amt > total) { alert(`金額不可超過待補繳總額 ${total.toLocaleString()} 元`); return; }
+  const remaining = total - amt;
+  const note = remaining > 0 ? `\n（剩餘 ${remaining.toLocaleString()} 元待後續補繳）` : '';
+  if (!confirm(`確認已收取 ${amt.toLocaleString()} 元？${note}`)) return;
+  _callConfirmCharge(amt);
+}
+
+function _callConfirmCharge(amount) {
+  fetch('/api/confirm-rental-charge', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({rental_id: _currentSpot.rentalId, amount}),
+  }).then(r => r.json()).then(data => {
+    if (data.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + data.msg);
+  });
+}
+
+function doWaiveRentalCharge() {
+  const amt = -_currentSpot.rentalRefundPending;
+  if (!confirm(`確定豁免補繳款 ${amt.toLocaleString()} 元？\n此筆將記入支出備查，不計入收入。`)) return;
+  fetch('/api/waive-rental-charge', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({rental_id: _currentSpot.rentalId}),
+  }).then(r => r.json()).then(data => {
+    if (data.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + data.msg);
+  });
+}
+
+function doWaiveFutureCharge() {
+  const amt = -_currentSpot.futureRentalRefundPending;
+  if (!confirm(`確定豁免補繳款 ${amt.toLocaleString()} 元？\n此筆將記入支出備查，不計入收入。`)) return;
+  fetch('/api/waive-rental-charge', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({rental_id: _currentSpot.futureRentalId}),
+  }).then(r => r.json()).then(data => {
+    if (data.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + data.msg);
+  });
+}
+
+// ── 預約租約補繳 / 部分補繳 ─────────────────────────────────
+function doConfirmFutureCharge() {
+  const amt = -_currentSpot.futureRentalRefundPending;
+  if (!confirm(`確認已向車主收取全額補繳款 ${amt.toLocaleString()} 元？`)) return;
+  _callConfirmFutureCharge(amt);
+}
+
+function toggleFuturePartialChargeForm(show, mode) {
+  const elId = (mode === 'vacant') ? 'vacantFuturePartialChargeForm' : 'futurePartialChargeForm';
+  const inputId = (mode === 'vacant') ? 'vacantFuturePartialChargeInput' : 'futurePartialChargeInput';
+  document.getElementById(elId).classList.toggle('d-none', !show);
+  if (show) {
+    const remaining = -_currentSpot.futureRentalRefundPending;
+    const inp = document.getElementById(inputId);
+    inp.value = remaining;
+    inp.max = remaining;
+    inp.focus();
+    inp.select();
+  }
+}
+
+function doFuturePartialCharge(mode) {
+  const inputId = (mode === 'vacant') ? 'vacantFuturePartialChargeInput' : 'futurePartialChargeInput';
+  const amt = parseInt(document.getElementById(inputId).value) || 0;
+  const total = -_currentSpot.futureRentalRefundPending;
+  if (amt <= 0) { alert('請輸入收款金額'); return; }
+  if (amt > total) { alert(`金額不可超過待補繳總額 ${total.toLocaleString()} 元`); return; }
+  const remaining = total - amt;
+  const note = remaining > 0 ? `\n（剩餘 ${remaining.toLocaleString()} 元待後續補繳）` : '';
+  if (!confirm(`確認已收取 ${amt.toLocaleString()} 元？${note}`)) return;
+  _callConfirmFutureCharge(amt);
+}
+
+function _callConfirmFutureCharge(amount) {
+  fetch('/api/confirm-rental-charge', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({rental_id: _currentSpot.futureRentalId, amount}),
+  }).then(r => r.json()).then(data => {
+    if (data.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + data.msg);
+  });
+}
+
+function cancelChargeWaiver(rentalId) {
+  if (!rentalId) { alert('找不到租約'); return; }
+  if (!confirm('確定取消「補繳豁免」記錄？\n租約將恢復為待補繳狀態。')) return;
+  fetch('/api/cancel-charge-waiver', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ rental_id: rentalId }),
+  }).then(r => r.json()).then(data => {
+    if (data.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + (data.msg || '未知錯誤'));
+  }).catch(err => alert('錯誤：' + err.message));
+}
+
+function cancelExtraFuture(rentalId, tenantName) {
+  if (!confirm(`確定取消 ${tenantName} 的預約？\n若已預繳款項請先確認退款事宜。`)) return;
+  fetch('/api/cancel-future-booking', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({rental_id: rentalId, refund_amount: 0}),
+  }).then(r => r.json()).then(data => {
+    if (data.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + (data.msg || data.error));
+  });
+}
+
+function confirmFutureRefund() {
+  const refund = _currentSpot.futureRentalRefundPending;
+  const net    = _currentSpot.futureRentalTotalPaid - refund;
+  if (!confirm(
+    `確認已將 ${refund.toLocaleString()} 元退還給 ${_currentSpot.futureTenantName}？\n` +
+    `確認後實計預繳金額將更新為 ${net.toLocaleString()} 元。`
+  )) return;
+  fetch('/api/confirm-future-refund', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rental_id: parseInt(_currentSpot.futureRentalId) }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+// 顯示／隱藏下任車主待退款橫幅（與現任車主同格式）
+function _toggleFutureRefundAlert(frp) {
+  const alertEl = document.getElementById('pendingFutureRefundAlert');
+  if (frp > 0) {
+    document.getElementById('pendingFutureRefundAmountLabel').textContent = frp.toLocaleString();
+    alertEl.classList.remove('d-none');
+  } else {
+    alertEl.classList.add('d-none');
+    const _r = document.getElementById('futureRefundReason');
+    if (_r) _r.value = '';
+  }
+}
+
+function doConfirmFutureRefundFromBanner() {
+  const reason = (document.getElementById('futureRefundReason').value || '').trim();
+  if (!reason) { alert('請填寫退款原因後再確認。'); return; }
+  const refund = _currentSpot.futureRentalRefundPending;
+  if (!confirm(`確認已將 ${refund.toLocaleString()} 元退還給 ${_currentSpot.futureTenantName}？`)) return;
+  fetch('/api/confirm-future-refund', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rental_id: parseInt(_currentSpot.futureRentalId),
+      reason,
+    }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + (r.msg || r.error || '未知錯誤'));
+  });
+}
+
+function doWaiveFutureRefundFromBanner() {
+  const refund = _currentSpot.futureRentalRefundPending || 0;
+  if (!_currentSpot.futureRentalId) return;
+  if (!confirm(
+    `確認記錄「車主告知不需退款」？\n` +
+    (refund > 0 ? `原待退款：${refund.toLocaleString()} 元\n` : '') +
+    `將清除待退款記錄，並留下豁免備查記錄（不計入支出）。`
+  )) return;
+  fetch('/api/waive-future-refund', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rental_id: parseInt(_currentSpot.futureRentalId),
+      amount:    refund,
+    }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + (r.msg || r.error || '未知錯誤'));
+  });
+}
+
+function doSetRental() { doSetType('rental'); }
+
+function doSetType(type) {
+  const labels = { rental: '出租', disabled: '停用' };
+  let reason = '';
+  if (type === 'disabled') {
+    reason = (prompt(`請輸入停用原因（例：瓜皮使用、施工中、保留）：`, _currentSpot.disabledReason || '') || '').trim();
+    if (reason === '') {
+      // 使用者按取消或留空 → 中止
+      if (!confirm(`未填寫原因，仍要停用車位 ${_currentSpot.spotNumber}？`)) return;
+    }
+  }
+  if (!confirm(`確定將車位 ${_currentSpot.spotNumber} 設為「${labels[type]}」${reason ? `（原因：${reason}）` : ''}？`)) return;
+  fetch('/api/spot-type', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ spot_id: parseInt(_currentSpot.spotId), spot_type: type, reason: reason })
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) { modal.hide(); location.reload(); }
+    else alert('錯誤：' + r.msg);
+  });
+}
+
+// ── 長按選單 ────────────────────────────────────────────────
+let _lpTimer = null, _lpFired = false, _lpEl = null;
+function _spotLpStart(e, el) {
+  _lpFired = false; _lpEl = el;
+  _lpTimer = setTimeout(() => {
+    _lpFired = true;
+    if (navigator.vibrate) navigator.vibrate(40);
+    _showSpotMenu(e, el);
+  }, 500);
+}
+function _spotLpEnd()  { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } }
+function _spotLpMove() { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } }
+function _spotClick(el) {
+  if (_lpFired) { _lpFired = false; return; }
+  openSpotModal(el);
+}
+function _showSpotMenu(e, el) {
+  const d = el.dataset;
+  const list = document.getElementById('spotCtxList');
+  list.innerHTML = '';
+  const li = (icon, text, badge, fn) => {
+    const item = document.createElement('li');
+    item.style.cssText = 'padding:13px 18px;cursor:pointer;display:flex;align-items:center;gap:10px;border-top:1px solid #f5f5f5';
+    item.innerHTML = `<i class="bi ${icon}" style="font-size:1.1rem"></i><span>${text}</span>`
+      + (badge ? `<span style="margin-left:auto;background:#198754;color:#fff;border-radius:10px;padding:1px 7px;font-size:.78rem">${badge}</span>` : '');
+    item.addEventListener('click', () => { closeSpotMenu(); fn(); });
+    list.appendChild(item);
+  };
+  const first = list.querySelector('li');
+  if (first) first.style.borderTop = 'none';
+  li('bi-info-circle', '查看車位資訊', '', () => openSpotModal(el));
+  if (d.rentalId) {
+    const cnt = parseInt(d.contractCount || '0');
+    li('bi-journal-text', '合約照片', cnt > 0 ? cnt : '', () => openContractDlg(d.rentalId, d.tenantName, d.spotNumber));
+  }
+  // 修正第一個 li 的 border
+  list.querySelector('li').style.borderTop = 'none';
+  const touch = e.touches ? e.touches[0] : e;
+  const menu = document.getElementById('spotCtxMenu');
+  menu.style.display = 'block';
+  document.getElementById('spotCtxBackdrop').style.display = 'block';
+  const mw = 200, mh = d.rentalId ? 112 : 56;
+  let x = touch.clientX, y = touch.clientY;
+  if (x + mw > window.innerWidth)  x = window.innerWidth  - mw - 8;
+  if (y + mh > window.innerHeight) y = window.innerHeight - mh - 8;
+  menu.style.left = x + 'px';
+  menu.style.top  = y + 'px';
+}
+function closeSpotMenu() {
+  document.getElementById('spotCtxMenu').style.display = 'none';
+  document.getElementById('spotCtxBackdrop').style.display = 'none';
+}
+
+let _contractDlgRentalId = null;
+function openContractDlg(rentalId, tenantName, spotNumber) {
+  _contractDlgRentalId = parseInt(rentalId);
+  document.getElementById('contractDlgTitle').textContent =
+    '📖 合約照片 — #' + rentalId + ' ' + (tenantName||'') + '（車位 ' + (spotNumber||'') + '）';
+  document.getElementById('contractFrame').src = '/rentals/' + rentalId + '/contract';
+  document.getElementById('contractDlg').showModal();
+}
+function closeContractDlg() {
+  document.getElementById('contractDlg').close();
+  document.getElementById('contractFrame').src = '';
+  if (_contractDlgRentalId) {
+    fetch('/api/contract-count/' + _contractDlgRentalId)
+      .then(r => r.json())
+      .then(data => {
+        const c = data.count;
+        const isCurrent = _currentSpot && parseInt(_currentSpot.rentalId) === _contractDlgRentalId;
+        const isFuture  = _currentSpot && parseInt(_currentSpot.futureRentalId) === _contractDlgRentalId;
+        if (isCurrent) {
+          _currentSpot.contractCount = c;
+          const b = document.getElementById('currentContractBadge');
+          if (b) { b.textContent = c; b.classList.toggle('d-none', c <= 0); }
+        }
+        if (isFuture) {
+          _currentSpot.futureContractCount = c;
+          ['futureContractBadge','vacantFutureContractBadge'].forEach(id => {
+            const b = document.getElementById(id);
+            if (b) { b.textContent = c; b.classList.toggle('d-none', c <= 0); }
+          });
+        }
+        _contractDlgRentalId = null;
+      });
+  }
+}
+</script>
+{% endblock %}

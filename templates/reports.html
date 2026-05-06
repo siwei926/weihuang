@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}報表分析{% endblock %}
+
+{% block content %}
+<h4 class="fw-bold mb-3"><i class="bi bi-bar-chart-line me-2"></i>報表分析</h4>
+
+<div class="row g-3">
+  <div class="col-md-4">
+    <div class="card shadow-sm">
+      <div class="card-header fw-semibold">出租率</div>
+      <div class="card-body d-flex justify-content-center align-items-center" style="min-height:300px;">
+        <canvas id="pieChart" style="max-height:300px;"></canvas>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-8">
+    <div class="card shadow-sm">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span class="fw-semibold">
+          <span id="chartYearTitle">{{ selected_year }}</span> 年收支對比
+          {% if selected_year == current_year %}
+          <span class="badge bg-primary ms-1" style="font-size:.7rem">本年</span>
+          {% endif %}
+        </span>
+        <div class="d-flex align-items-center gap-1">
+          <a href="{{ url_for('reports', year=selected_year - 1) }}"
+             class="btn btn-sm btn-outline-secondary px-2">&#8249;</a>
+          <span class="fw-bold mx-1">{{ selected_year }}</span>
+          <a href="{{ url_for('reports', year=selected_year + 1) }}"
+             class="btn btn-sm btn-outline-secondary px-2
+             {% if selected_year >= current_year %}disabled{% endif %}">&#8250;</a>
+        </div>
+      </div>
+      <div class="card-body">
+        <div style="position:relative;height:320px;">
+          <canvas id="barChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 車主累計收支 -->
+<div class="card shadow-sm mt-3">
+  <div class="card-header fw-semibold">
+    <i class="bi bi-person-lines-fill me-1"></i>車主累計收支
+    <span class="text-muted fw-normal small">（依電話/Line ID 為唯一識別；累計月數以淨繳 ÷ 1,000 估算）</span>
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-hover table-bordered mb-0">
+      <thead>
+        <tr>
+          <th>電話/Line ID</th>
+          <th>車主</th>
+          <th>車牌</th>
+          <th>目前車位</th>
+          <th class="text-end">累計月數</th>
+          <th class="text-end">累計繳費</th>
+          <th class="text-end">累計退費</th>
+          <th class="text-end">淨繳</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tenants_summary %}
+        <tr>
+          <td class="fw-semibold">{{ t.phone }}</td>
+          <td>{{ t.name }}</td>
+          <td>
+            {% if t.license_plate and t.license_plate != '—' %}
+              <span class="badge bg-dark">{{ t.license_plate }}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if t.active_spots %}
+              {% for s in t.active_spots %}<span class="badge bg-primary me-1">{{ s }}</span>{% endfor %}
+            {% else %}<span class="text-muted">—</span>{% endif %}
+          </td>
+          <td class="text-end">{{ t.paid_months }} 月</td>
+          <td class="text-end fw-semibold text-success">{{ '{:,}'.format(t.paid_amount) }} 元</td>
+          <td class="text-end {% if t.refund_amount > 0 %}text-warning{% else %}text-muted{% endif %}">
+            {{ '{:,}'.format(t.refund_amount) }} 元
+          </td>
+          <td class="text-end fw-bold">{{ '{:,}'.format(t.net_amount) }} 元</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="text-center text-muted py-3">尚無車主收支記錄</td></tr>
+        {% endfor %}
+      </tbody>
+      {% if tenants_summary %}
+      <tfoot>
+        <tr class="table-secondary fw-semibold">
+          <td colspan="4" class="text-end">合計</td>
+          <td class="text-end">{{ tenants_summary | sum(attribute='paid_months') }} 月</td>
+          <td class="text-end text-success">{{ '{:,}'.format(tenants_summary | sum(attribute='paid_amount')) }} 元</td>
+          <td class="text-end text-warning">{{ '{:,}'.format(tenants_summary | sum(attribute='refund_amount')) }} 元</td>
+          <td class="text-end">{{ '{:,}'.format(tenants_summary | sum(attribute='net_amount')) }} 元</td>
+        </tr>
+      </tfoot>
+      {% endif %}
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 出租率甜甜圈圖
+const _rentedCount   = {{ rate_counts.rented }};
+const _vacantCount   = {{ rate_counts.vacant }};
+const _disabledCount = {{ rate_counts.disabled }};
+const _totalCount    = _rentedCount + _vacantCount + _disabledCount;
+
+new Chart(document.getElementById('pieChart'), {
+  type: 'doughnut',
+  data: {
+    labels: ['已出租', '空置', '停用'],
+    datasets: [{
+      data: [_rentedCount, _vacantCount, _disabledCount],
+      backgroundColor: ['#2196f3', '#43a047', '#9e9e9e'],
+      hoverBackgroundColor: ['#1976d2', '#2e7d32', '#616161'],   // hover 時用更深的色階
+      hoverBorderColor: '#fff',
+      hoverBorderWidth: 4,
+      borderWidth: 2,
+      hoverOffset: 18,                                            // 滑鼠靠近時該段往外彈出
+    }]
+  },
+  options: {
+    cutout: '60%',
+    layout: { padding: 12 },
+    animation: { animateScale: true, animateRotate: true, duration: 700 },
+    plugins: {
+      legend: {
+        position: 'bottom',
+        labels: { font: { size: 13, weight: '600' }, padding: 12, usePointStyle: true }
+      },
+      tooltip: {
+        backgroundColor: 'rgba(33,33,33,.92)',
+        padding: 12,
+        titleFont: { size: 14, weight: 'bold' },
+        bodyFont: { size: 13 },
+        displayColors: true,
+        callbacks: {
+          label: ctx => {
+            const v = ctx.parsed;
+            const pct = _totalCount > 0 ? ((v / _totalCount) * 100).toFixed(1) : 0;
+            return ` ${ctx.label}：${v} 個（${pct}%）`;
+          }
+        }
+      }
+    },
+    interaction: { mode: 'nearest', intersect: true },
+  }
+});
+
+// 收支對比長條圖（會計分項：收入 / 退費 / 支出 + 淨額折線）
+const _rev = {{ revenues | tojson }};
+const _refund = {{ refunds_chart | tojson }};
+const _exp = {{ expenses_chart | tojson }};
+const _net = _rev.map((r, i) => r - _refund[i] - _exp[i]);
+
+new Chart(document.getElementById('barChart'), {
+  type: 'bar',
+  data: {
+    labels: {{ months | tojson }},
+    datasets: [
+      {
+        label: '收入（元）',
+        data: _rev,
+        backgroundColor: 'rgba(38,166,154,.8)',
+        borderRadius: 5,
+        order: 1,
+      },
+      {
+        label: '退費（元）',
+        data: _refund,
+        backgroundColor: 'rgba(255,152,0,.8)',
+        borderRadius: 5,
+        order: 2,
+      },
+      {
+        label: '支出（元）',
+        data: _exp,
+        backgroundColor: 'rgba(239,83,80,.8)',
+        borderRadius: 5,
+        order: 3,
+      },
+      {
+        type: 'line',
+        label: '淨額（元）',
+        data: _net,
+        borderColor: '#42a5f5',
+        backgroundColor: 'rgba(66,165,245,.12)',
+        pointBackgroundColor: _net.map(v => v >= 0 ? '#42a5f5' : '#ff7043'),
+        pointRadius: 5,
+        pointHoverRadius: 7,
+        borderWidth: 2.5,
+        tension: 0.35,
+        fill: true,
+        order: 0,
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: {
+        beginAtZero: true,
+        ticks: { callback: v => v.toLocaleString() }
+      }
+    },
+    plugins: {
+      legend: { position: 'bottom' },
+      tooltip: {
+        callbacks: {
+          label: ctx => ` ${ctx.dataset.label}：${ctx.parsed.y.toLocaleString()} 元`
+        }
+      }
+    }
+  }
+});
+</script>
+{% endblock %}

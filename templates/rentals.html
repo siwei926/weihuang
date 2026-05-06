@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% block title %}出租管理{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="fw-bold mb-0"><i class="bi bi-file-earmark-text me-2"></i>出租管理</h4>
+  {% if free_spots and tenants %}
+  <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">
+    <i class="bi bi-plus-lg me-1"></i>新增出租
+  </button>
+  {% endif %}
+</div>
+
+{% if not free_spots and not rentals %}
+<div class="alert alert-info">所有車位皆已出租，或尚無車位資料。</div>
+{% endif %}
+
+<!-- 出租中 -->
+<h6 class="text-primary fw-semibold mt-3">出租中</h6>
+<div class="card shadow-sm mb-4">
+  <div class="card-body p-0">
+    <table class="table table-hover table-bordered mb-0">
+      <thead>
+        <tr>
+          <th style="width:80px">訂單</th>
+          <th>車位</th>
+          <th>車主</th>
+          <th>車牌</th>
+          <th>電話/Line ID</th>
+          <th>起租日</th>
+          <th>結束日</th>
+          <th>月租金</th>
+          <th>合約金額</th>
+          <th>備註</th>
+          <th style="width:80px">合約</th>
+          <th style="width:70px">刪除</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rentals if r.status == 'active' %}
+        <tr>
+          <td><span class="badge bg-info text-dark">#{{ r.id }}</span></td>
+          <td class="fw-bold">{{ r.spot.spot_number }}</td>
+          <td>{{ r.tenant.name }}{% if r.tenant.is_deleted %} <span class="badge bg-secondary">已刪除</span>{% endif %}</td>
+          <td>
+            {% if r.tenant.license_plate %}
+              <span class="badge bg-dark">{{ r.tenant.license_plate }}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td>{{ r.tenant.phone or '—' }}</td>
+          <td>{{ r.start_date.strftime('%Y-%m-%d') }}</td>
+          <td>{{ r.expected_end_date.strftime('%Y-%m-%d') if r.expected_end_date else '—' }}</td>
+          <td>{{ r.monthly_fee | int }} 元</td>
+          <td>
+            {% set total = contract_totals[r.id] %}
+            {% if total %}{{ total | int }} 元{% else %}—{% endif %}
+          </td>
+          <td>
+            {{ r.notes or '' }}
+            {% if r.id in contract_adjustments %}
+            {% set adj = contract_adjustments[r.id] %}
+            <div class="text-muted font-monospace mt-1" style="font-size:.78rem;white-space:nowrap">
+              {% if adj.type == 'refund' %}
+              {{ adj.original | int }}－{{ adj.delta | int }}＝<strong class="text-danger">{{ adj.net | int }}</strong> 元
+              {% if adj.pending %}<span class="badge bg-danger ms-1" style="font-size:.65rem">待退款</span>{% endif %}
+              <div style="font-size:.70rem;color:#aaa;margin-top:2px;white-space:nowrap">
+                原: {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.orig_end.strftime('%Y/%m/%d') if adj.orig_end else '—' }}<br>
+                新: {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.new_end.strftime('%Y/%m/%d') if adj.new_end else '—' }}
+              </div>
+              {% elif adj.type == 'supplement' %}
+              {{ adj.original | int }}＋{{ adj.delta | int }}＝<strong class="text-success">{{ adj.net | int }}</strong> 元
+              <div style="font-size:.70rem;color:#aaa;margin-top:2px;white-space:nowrap">
+                原: {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.orig_end.strftime('%Y/%m/%d') if adj.orig_end else '—' }}<br>
+                新: {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.new_end.strftime('%Y/%m/%d') if adj.new_end else '—' }}
+              </div>
+              {% elif adj.type == 'pending' %}
+              {{ adj.original | int }}＋{{ adj.delta | int }}＝<strong class="text-success">{{ adj.net | int }}</strong> 元
+              <span class="badge bg-success ms-1" style="font-size:.65rem">待補繳</span>
+              <div style="font-size:.70rem;color:#aaa;margin-top:2px;white-space:nowrap">
+                原: {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.orig_end.strftime('%Y/%m/%d') if adj.orig_end else '—' }}<br>
+                新: {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.new_end.strftime('%Y/%m/%d') if adj.new_end else '—' }}
+              </div>
+              {% elif adj.type == 'extended_paid' %}
+              {{ adj.original | int }}＋{{ adj.delta | int }}＝<strong class="text-success">{{ adj.net | int }}</strong> 元 ✓
+              <div style="font-size:.70rem;color:#aaa;margin-top:2px;white-space:nowrap">
+                原: {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.orig_end.strftime('%Y/%m/%d') }}<br>
+                新: {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.new_end.strftime('%Y/%m/%d') }}
+              </div>
+              {% else %}
+              <span class="text-success">✓ 已繳清</span> {{ adj.original | int }} 元
+              <div style="font-size:.70rem;color:#aaa;margin-top:2px;white-space:nowrap">
+                {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.orig_end.strftime('%Y/%m/%d') if adj.orig_end else '—' }}
+              </div>
+              {% endif %}
+            </div>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            {% set file_count = contracts[r.id] | length %}
+            <button class="btn btn-sm btn-outline-secondary"
+                    onclick="openContractDlg({{ r.id }})">
+              <i class="bi bi-journal-text"></i>
+              <span class="badge bg-success ms-1{% if file_count == 0 %} d-none{% endif %}"
+                    data-rental-badge="{{ r.id }}">{{ file_count }}</span>
+            </button>
+          </td>
+          <td>
+            <form action="{{ url_for('rental_delete', rental_id=r.id) }}" method="post" class="d-inline"
+                  onsubmit="return confirm('確定刪除此出租記錄？')">
+              <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="12" class="text-center text-muted py-2">目前無出租中記錄</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 歷史記錄 -->
+{% set ended = rentals | selectattr('status','equalto','ended') | list %}
+{% if ended %}
+<h6 class="text-secondary fw-semibold">歷史記錄</h6>
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    <table class="table table-hover table-bordered mb-0 table-sm">
+      <thead>
+        <tr>
+          <th style="width:80px">訂單</th>
+          <th>車位</th><th>車主</th><th>起租日</th><th>結束日</th><th>月租金</th><th>合約金額</th><th>備註</th>
+          <th style="width:70px">刪除</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in ended %}
+        <tr class="text-muted">
+          <td><span class="badge bg-secondary">#{{ r.id }}</span></td>
+          <td>{{ r.spot.spot_number }}</td>
+          <td>{{ r.tenant.name }}{% if r.tenant.is_deleted %} <span class="badge bg-secondary">已刪除</span>{% endif %}</td>
+          <td>{{ r.start_date.strftime('%Y-%m-%d') }}</td>
+          <td>{{ r.end_date.strftime('%Y-%m-%d') if r.end_date else '—' }}</td>
+          <td>{{ r.monthly_fee | int }} 元</td>
+          <td>
+            {% set total = contract_totals[r.id] %}
+            {% if total %}{{ total | int }} 元{% else %}—{% endif %}
+          </td>
+          <td>
+            {% if r.id in contract_adjustments %}
+            {% set adj = contract_adjustments[r.id] %}
+            <div class="font-monospace" style="font-size:.78rem;white-space:nowrap">
+              {% if adj.type == 'refund' %}
+              {{ adj.original | int }}－{{ adj.delta | int }}＝<strong class="text-danger">{{ adj.net | int }}</strong> 元
+              {% elif adj.type == 'supplement' %}
+              {{ adj.original | int }}＋{{ adj.delta | int }}＝<strong class="text-success">{{ adj.net | int }}</strong> 元
+              {% else %}
+              {{ adj.original | int }}＋<span class="text-warning">待補 {{ adj.delta | int }}</span>＝{{ adj.net | int }} 元
+              {% endif %}
+              <div style="font-size:.70rem;color:#aaa;margin-top:2px;font-family:monospace;white-space:nowrap">
+                原: {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.orig_end.strftime('%Y/%m/%d') if adj.orig_end else '—' }}<br>
+                新: {{ adj.start.strftime('%Y/%m/%d') }} ~ {{ adj.new_end.strftime('%Y/%m/%d') if adj.new_end else '—' }}
+              </div>
+            </div>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            <form action="{{ url_for('rental_delete', rental_id=r.id) }}" method="post"
+                  onsubmit="return confirm('確定刪除？')">
+              <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+
+<!-- 合約照片 Dialog（iframe，與舊 dialog 相同結構） -->
+<dialog id="contractDlg" style="border:none;border-radius:14px;padding:0;width:min(520px,96vw);height:82vh;box-shadow:0 8px 32px rgba(0,0,0,.3)">
+  <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #dee2e6;background:#f8f9fa;border-radius:14px 14px 0 0">
+    <strong id="contractDlgTitle" style="font-size:1rem">合約照片</strong>
+    <button type="button" onclick="closeContractDlg()"
+            style="background:none;border:none;font-size:1.6rem;cursor:pointer;line-height:1;padding:0 4px">×</button>
+  </div>
+  <iframe id="contractFrame" src="" style="width:100%;height:calc(82vh - 50px);border:none;display:block"></iframe>
+</dialog>
+
+<script>
+let _contractDlgRentalId = null;
+function openContractDlg(rentalId) {
+  _contractDlgRentalId = rentalId;
+  document.getElementById('contractDlgTitle').textContent = '📖 合約照片 — #' + rentalId;
+  document.getElementById('contractFrame').src = '/rentals/' + rentalId + '/contract';
+  document.getElementById('contractDlg').showModal();
+}
+function closeContractDlg() {
+  document.getElementById('contractDlg').close();
+  document.getElementById('contractFrame').src = '';
+  if (_contractDlgRentalId) {
+    fetch('/api/contract-count/' + _contractDlgRentalId)
+      .then(r => r.json())
+      .then(data => {
+        const c = data.count;
+        document.querySelectorAll('[data-rental-badge="' + _contractDlgRentalId + '"]').forEach(b => {
+          b.textContent = c;
+          b.classList.toggle('d-none', c <= 0);
+        });
+        _contractDlgRentalId = null;
+      });
+  }
+}
+</script>
+
+
+<!-- 新增出租 Modal -->
+<div class="modal fade" id="addModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form action="{{ url_for('rental_add') }}" method="post">
+        <div class="modal-header">
+          <h5 class="modal-title">新增出租</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label fw-semibold">車位 <span class="text-danger">*</span></label>
+            <select name="spot_id" class="form-select" required>
+              <option value="">— 選擇車位 —</option>
+              {% for s in free_spots %}
+                <option value="{{ s.id }}">{{ s.spot_number }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">車主 <span class="text-danger">*</span></label>
+            <select name="tenant_id" class="form-select" required>
+              <option value="">— 選擇車主 —</option>
+              {% for t in tenants %}
+                <option value="{{ t.id }}">{{ t.name }}（{{ t.license_plate or '無車牌' }}）</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">起租日</label>
+            <input type="date" name="start_date" class="form-control"
+                   value="{{ today.strftime('%Y-%m-%d') if today else '' }}">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">備註</label>
+            <input type="text" name="notes" class="form-control">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-primary">新增</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

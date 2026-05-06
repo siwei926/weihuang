@@ -1,0 +1,11 @@
+services:
+  parking:
+    build: .
+    container_name: parking_manager
+    restart: always
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env

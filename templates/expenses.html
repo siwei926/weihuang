@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}支出/退費管理{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="fw-bold mb-0"><i class="bi bi-tools me-2"></i>支出/退費管理</h4>
+  <button class="btn btn-danger" data-bs-toggle="modal" data-bs-target="#addModal">
+    <i class="bi bi-plus-lg me-1"></i>新增支出
+  </button>
+</div>
+
+<!-- 月份篩選 -->
+<form method="get" class="d-flex align-items-center gap-2 mb-3">
+  <label class="fw-semibold me-1">月份：</label>
+  <input type="month" name="month" class="form-control" style="width:160px"
+         value="{% if month_filter != 'all' %}{{ month_filter }}{% endif %}"
+         onchange="this.form.submit()">
+  <a href="{{ url_for('expenses') }}" class="btn btn-outline-secondary btn-sm">本月</a>
+  <a href="{{ url_for('expenses', month='all') }}" class="btn btn-outline-secondary btn-sm">全部</a>
+</form>
+
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    <table class="table table-hover table-bordered mb-0">
+      <thead>
+        <tr>
+          <th style="width:80px">訂單</th>
+          <th style="width:120px">日期</th>
+          <th style="width:100px">類別</th>
+          <th>說明</th>
+          <th style="width:120px" class="text-end">金額（元）</th>
+          <th style="width:100px">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in expenses %}
+        <tr{% if e.category == '退費' and not e.confirmed %} class="table-danger"{% endif %}>
+          <td>
+            {% if e.rental_id %}
+              <span class="badge bg-info text-dark">#{{ e.rental_id }}</span>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {{ e.expense_date.strftime('%Y-%m-%d') }}
+            {% if e.created_at %}
+            <br><small class="text-muted">{{ e.created_at.strftime('%H:%M:%S') }}</small>
+            {% endif %}
+          </td>
+          <td>
+            {% if e.category in ('退費豁免', '補繳豁免') %}
+              <span class="badge" style="background:#78909c;">{{ e.category }}</span>
+              <span class="badge bg-secondary ms-1">備查</span>
+            {% else %}
+              <span class="badge" style="background:#7e57c2;">{{ e.category }}</span>
+              {% if e.category == '退費' %}
+                {% if e.confirmed %}
+                  <span class="badge bg-success ms-1">已退款</span>
+                {% else %}
+                  <span class="badge bg-danger ms-1">待退款</span>
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          </td>
+          <td>{{ e.description or '—' }}</td>
+          <td class="text-end fw-semibold {% if e.category not in ('退費豁免', '補繳豁免') %}text-danger{% else %}text-muted{% endif %}">
+            {% if e.category in ('退費豁免', '補繳豁免') %}—{% else %}{{ "{:,}".format(e.amount | int) }}{% endif %}
+          </td>
+          <td>
+            {% if e.category == '退費' and not e.confirmed %}
+            <form action="{{ url_for('confirm_refund_page', expense_id=e.id) }}" method="post" class="d-inline">
+              <button class="btn btn-sm btn-success" title="確認已退款">
+                <i class="bi bi-check-lg"></i>
+              </button>
+            </form>
+            {% endif %}
+            <a href="{{ url_for('expense_edit', expense_id=e.id) }}"
+               class="btn btn-sm btn-outline-primary">
+              <i class="bi bi-pencil"></i>
+            </a>
+            <form action="{{ url_for('expense_delete', expense_id=e.id) }}"
+                  method="post" class="d-inline"
+                  onsubmit="return confirm('確定刪除此支出記錄？')">
+              <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-3">
+          {% if month_filter == 'all' %}尚無支出記錄{% else %}{{ month_filter }} 無支出記錄{% endif %}
+        </td></tr>
+        {% endfor %}
+      </tbody>
+      {% if expenses %}
+      <tfoot>
+        <tr class="table-secondary fw-semibold">
+          <td colspan="4" class="text-end">合計</td>
+          <td class="text-end text-danger">{{ expenses | selectattr('category', 'ne', '退費豁免') | selectattr('category', 'ne', '補繳豁免') | sum(attribute='amount') | int }} 元</td>
+          <td></td>
+        </tr>
+      </tfoot>
+      {% endif %}
+    </table>
+  </div>
+</div>
+
+<!-- 新增支出 Modal -->
+<div class="modal fade" id="addModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form action="{{ url_for('expense_add') }}" method="post">
+        <div class="modal-header bg-danger text-white">
+          <h5 class="modal-title"><i class="bi bi-tools me-2"></i>新增支出</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label fw-semibold">日期</label>
+            <input type="date" name="expense_date" class="form-control"
+                   value="{{ today.strftime('%Y-%m-%d') }}">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">類別</label>
+            <select name="category" class="form-select">
+              {% for cat in categories %}
+              <option value="{{ cat }}">{{ cat }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">金額（元） <span class="text-danger">*</span></label>
+            <input type="number" name="amount" class="form-control" min="1" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">說明</label>
+            <textarea name="description" class="form-control" rows="2"
+                      placeholder="例：三樓牆面油漆翻新"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-danger">新增</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

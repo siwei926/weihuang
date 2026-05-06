@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}編輯車主 {{ tenant.name }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card shadow-sm">
+      <div class="card-header fw-semibold">
+        <i class="bi bi-pencil-square me-2"></i>編輯車主 {{ tenant.name }}
+      </div>
+      <div class="card-body">
+        <form action="{{ url_for('tenant_edit', tenant_id=tenant.id) }}" method="post">
+          <div class="mb-3">
+            <label class="form-label fw-semibold">姓名 <span class="text-danger">*</span></label>
+            <input type="text" name="name" class="form-control"
+                   value="{{ tenant.name }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">電話/Line ID <span class="text-danger">*</span></label>
+            <input type="text" name="phone" class="form-control" required
+                   value="{{ tenant.phone or '' }}"
+                   placeholder="電話號碼或 Line ID（擇一填入，作為唯一身份識別）">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">車牌號碼</label>
+            <input type="text" name="license_plate" class="form-control"
+                   value="{{ tenant.license_plate or '' }}">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">備註</label>
+            <textarea name="notes" class="form-control" rows="2">{{ tenant.notes or '' }}</textarea>
+          </div>
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary">儲存</button>
+            <a href="{{ url_for('tenants') }}" class="btn btn-secondary">取消</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}車位管理{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="fw-bold mb-0"><i class="bi bi-pin-map me-2"></i>車位管理</h4>
+  <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">
+    <i class="bi bi-plus-lg me-1"></i>新增車位
+  </button>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    <table class="table table-hover table-bordered mb-0">
+      <thead>
+        <tr>
+          <th>車位編號</th>
+          <th>類型</th>
+          <th>備註</th>
+          <th style="width:140px">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in spots %}
+        <tr>
+          <td class="fw-semibold">{{ s.spot_number }}</td>
+          <td>
+            {% if s.spot_type == 'disabled' %}
+              <span class="badge bg-secondary">停用</span>
+            {% else %}
+              <span class="badge bg-success">出租</span>
+            {% endif %}
+          </td>
+          <td>{{ s.notes or '—' }}</td>
+          <td>
+            <a href="{{ url_for('spot_edit', spot_id=s.id) }}" class="btn btn-sm btn-outline-primary">
+              <i class="bi bi-pencil"></i>
+            </a>
+            <form action="{{ url_for('spot_delete', spot_id=s.id) }}" method="post" class="d-inline"
+                  onsubmit="return confirm('確定刪除車位 {{ s.spot_number }}？此操作將同時刪除相關出租與繳費紀錄！')">
+              <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="text-center text-muted py-3">尚無車位資料</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 新增車位 Modal -->
+<div class="modal fade" id="addModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form action="{{ url_for('spot_add') }}" method="post">
+        <div class="modal-header">
+          <h5 class="modal-title">新增車位</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label fw-semibold">車位編號 <span class="text-danger">*</span></label>
+            <input type="text" name="spot_number" class="form-control" placeholder="例：A1、19" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">備註</label>
+            <input type="text" name="notes" class="form-control" placeholder="選填">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-primary">新增</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

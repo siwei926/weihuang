@@ -1,0 +1,185 @@
+body {
+  background: #f4f6f9;
+  font-family: "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+}
+
+/* ── 車位格子 ── */
+.spot-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 10px;
+  margin-bottom: 1.5rem;
+}
+@media (max-width: 768px) {
+  .spot-grid { grid-template-columns: repeat(3, 1fr); }
+  /* 手機版改為自動排列，不強制 8/9 拆排 */
+  .spot-placeholder { display: none; }
+}
+/* 第 8 格後的隱形佔位：把第 9 個格位空出來，使第二排自然有 9 個 */
+.spot-placeholder {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.spot-card {
+  border-radius: 10px;
+  padding: 10px 8px;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,.12);
+  transition: transform .15s, box-shadow .15s;
+  position: relative;
+  user-select: none;
+  height: 90px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* 出租中（已繳/未繳/快到期）車位顯示車子圖示作為背景水印 */
+.spot-card.spot-paid::before,
+.spot-card.spot-unpaid::before,
+.spot-card.spot-warning::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='%23000' d='M2.52 3.515A2.5 2.5 0 0 1 4.82 2h6.362c1 0 1.904.596 2.298 1.515l.792 1.848c.075.175.21.319.38.404.5.25.855.715.965 1.262l.335 1.679q.05.242.049.49v.413c0 .814-.39 1.543-1 1.997V13.5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-1.338c-1.292.048-2.745.088-4 .088s-2.708-.04-4-.088V13.5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-1.892c-.61-.454-1-1.183-1-1.997v-.413a2.5 2.5 0 0 1 .049-.49l.335-1.68c.11-.546.465-1.012.964-1.261a.8.8 0 0 0 .381-.404l.792-1.848ZM3 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2m10 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2M6 8a1 1 0 0 0 0 2h4a1 1 0 1 0 0-2zM2.906 5.189a.51.51 0 0 0 .497.731c.91-.073 3.35-.17 4.597-.17s3.688.097 4.597.17a.51.51 0 0 0 .497-.731l-.956-1.913A.5.5 0 0 0 11.691 3H4.309a.5.5 0 0 0-.447.276L2.906 5.19Z'/></svg>");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 55%;
+  opacity: 0.18;
+  pointer-events: none;
+  z-index: 0;
+}
+.spot-card .spot-num,
+.spot-card .spot-info,
+.spot-card .spot-flag,
+.spot-card > span {
+  position: relative;
+  z-index: 1;
+}
+.spot-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 6px 16px rgba(0,0,0,.2);
+}
+
+.spot-card .spot-num {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.spot-card .spot-info {
+  font-size: .72rem;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 顏色主題（與統計卡一致） */
+.spot-vacant  { background: #c8e6c9; border: 2px solid #43a047; color: #1b5e20; }
+.spot-paid    { background: #b2ebf2; border: 2px solid #00bcd4; color: #006064; }
+.spot-unpaid  { background: #ffcdd2; border: 2px solid #ef5350; color: #b71c1c; }
+.spot-warning { background: #fff3cd; border: 2px solid #ffc107; color: #856404; }
+.spot-disabled  { background: #e9ecef; border: 2px solid #adb5bd; color: #6c757d; opacity: .7; }
+.stat-disabled  { background: linear-gradient(135deg,#868e96,#495057); }
+
+/* ── 統計卡 ── */
+.stat-card {
+  border-radius: 12px;
+  padding: 18px 22px;
+  color: #fff;
+  box-shadow: 0 3px 8px rgba(0,0,0,.15);
+}
+.stat-card .stat-num  { font-size: 2.4rem; font-weight: 700; line-height: 1; }
+.stat-card .stat-label { font-size: .85rem; opacity: .85; margin-top: 4px; }
+
+/* 緊湊版（一排放 5 張時用），縮小數字字級避免換行 */
+.stat-card.stat-compact { padding: 12px 14px; }
+.stat-card.stat-compact .stat-num   { font-size: 1.6rem; }
+.stat-card.stat-compact .stat-label { font-size: .75rem; }
+
+.stat-total   { background: linear-gradient(135deg,#667eea,#764ba2); }
+.stat-rented  { background: linear-gradient(135deg,#2196f3,#0d47a1); }
+.stat-vacant  { background: linear-gradient(135deg,#43a047,#1b5e20); }
+.stat-paid    { background: linear-gradient(135deg,#00bcd4,#006064); }
+.stat-unpaid  { background: linear-gradient(135deg,#ef5350,#b71c1c); }
+.stat-warning { background: linear-gradient(135deg,#ffa000,#e65100); }
+.stat-prepaid { background: linear-gradient(135deg,#26c6da,#00838f); }
+
+/* ── 圖例 ── */
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 16px;
+  font-size: .85rem;
+}
+.legend-dot {
+  width: 14px; height: 14px;
+  border-radius: 3px;
+  margin-right: 5px;
+  flex-shrink: 0;
+}
+
+/* ── 預繳即將到期 折角 ── */
+.spot-card.prepaid-expiring {
+  overflow: hidden;
+}
+.spot-card.prepaid-expiring::after {
+  content: '預繳\A到期';
+  white-space: pre;
+  text-align: center;
+  position: absolute;
+  bottom: 9px;
+  right: -16px;
+  width: 58px;
+  padding: 2px 0;
+  background: #ff9800;
+  color: #fff;
+  font-size: 0.44rem;
+  font-weight: 700;
+  line-height: 1.45;
+  transform: rotate(-45deg);
+  box-shadow: 0 1px 4px rgba(0,0,0,.3);
+  pointer-events: none;
+}
+
+/* ── 待補繳 / 待退款 提示 ── */
+.spot-card.pending-charge {
+  border-color: #e65100 !important;
+  box-shadow: 0 0 0 2px #ff8c00 inset;
+}
+.spot-card.pending-refund {
+  border-color: #6a1b9a !important;
+  box-shadow: 0 0 0 2px #ab47bc inset;
+}
+
+/* 車位卡左下/右下角小 badge：目前車主 / 下任車主 待補繳·待退款狀態 */
+.spot-card .spot-flag {
+  position: absolute;
+  font-size: .58rem;
+  font-weight: 700;
+  color: #fff;
+  padding: 1px 5px;
+  letter-spacing: 1px;
+  line-height: 1.4;
+  box-shadow: 0 1px 2px rgba(0,0,0,.25);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.spot-card .spot-flag-left {
+  bottom: 0;
+  left: 0;
+  border-radius: 0 6px 0 0;
+}
+.spot-card .spot-flag-right {
+  bottom: 0;
+  right: 0;
+  border-radius: 6px 0 0 0;
+}
+
+/* ── 表格 ── */
+.table th { background: #343a40; color: #fff; }
+.table-hover tbody tr:hover { background: #e9f0ff; }

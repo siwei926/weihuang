@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>合約照片 — #{{ rental.id }}</title>
+</head>
+<body style="padding:24px; font-size:1.1rem;">
+
+  <p><a href="{{ url_for('rentals') }}">← 返回出租管理</a></p>
+  <h3>合約照片 — #{{ rental.id }} {{ rental.tenant.name }}（車位 {{ rental.spot.spot_number }}）</h3>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <p style="color:{% if cat == 'success' %}green{% else %}red{% endif %}">{{ msg }}</p>
+    {% endfor %}
+  {% endwith %}
+
+  <form method="post" action="{{ url_for('rental_contract_upload', rental_id=rental.id) }}" enctype="multipart/form-data">
+    <p>選擇照片 / 拍照 / PDF：</p>
+    <input type="file" name="file" accept="image/*,.pdf" style="font-size:1rem; margin-bottom:16px; display:block"><br>
+    <button type="submit" style="padding:14px 30px; font-size:1rem; background:#007bff; color:#fff; border:none; border-radius:8px">上傳</button>
+  </form>
+
+  <hr>
+
+  {% if files %}
+    <p><strong>已上傳 {{ files | length }} 個檔案：</strong></p>
+    {% for fname in files %}
+    {% set ext = fname.rsplit('.', 1)[-1].lower() %}
+    <div style="margin-bottom:16px">
+      {% if ext in ['jpg','jpeg','png','heic','heif'] %}
+        <a href="{{ url_for('rental_contract_file', rental_id=rental.id, filename=fname) }}" target="_blank">
+          <img src="{{ url_for('rental_contract_file', rental_id=rental.id, filename=fname) }}"
+               style="max-width:200px; max-height:200px; display:block; margin-bottom:6px">
+        </a>
+      {% else %}
+        <a href="{{ url_for('rental_contract_file', rental_id=rental.id, filename=fname) }}" target="_blank">{{ fname }}</a>
+      {% endif %}
+      <form method="post" action="{{ url_for('rental_contract_delete', rental_id=rental.id) }}"
+            onsubmit="return confirm('確定刪除？')" style="display:inline">
+        <input type="hidden" name="filename" value="{{ fname }}">
+        <button type="submit" style="color:red; background:none; border:none; cursor:pointer">🗑 刪除</button>
+      </form>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p style="color:#999">尚未上傳任何合約照片</p>
+  {% endif %}
+
+</body>
+</html>
